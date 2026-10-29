@@ -9,9 +9,9 @@ import json
 
 from click.testing import CliRunner
 
-from kernelforge.workflows.forge_fusion import harness_noise
-from kernelforge.cli.forge_fuse_command import forge_fuse as main
-from kernelforge.workflows.forge_fusion.validate import BenchOutcome
+from kernelforge.fusion import command as cli
+from kernelforge.fusion.command import run as main
+from kernelforge.fusion.validate import BenchOutcome
 
 
 def _run(tmp_path, monkeypatch, benches, repeat=None):
@@ -26,7 +26,7 @@ def _run(tmp_path, monkeypatch, benches, repeat=None):
         def microbench(self, _recipe):
             return next(calls)
 
-    monkeypatch.setattr(harness_noise, "HarnessKernelRunner", FakeRunner)
+    monkeypatch.setattr(cli, "HarnessKernelRunner", FakeRunner)
     result = CliRunner().invoke(
         main,
         [

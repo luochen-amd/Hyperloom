@@ -11,17 +11,7 @@ from hyperloom.common.perf_metric import GRADED_INTVTY, intvty_serving_grading_e
 
 from . import framework_registry
 
-__all__ = ["recorded_grading", "resolved_grading"]
-
-
-def recorded_grading(recorded: Any) -> tuple[bool, float | None] | None:
-    """The interactivity flag and noise band a recorded ``grading`` block states; ``None`` when it names no objective."""
-    recorded = recorded if isinstance(recorded, dict) else {}
-    objective = str(recorded.get("objective") or "").strip()
-    if not objective:
-        return None
-    noise_pct = recorded.get("noise_pct")
-    return objective == GRADED_INTVTY, (float(noise_pct) if isinstance(noise_pct, (int, float)) else None)
+__all__ = ["resolved_grading"]
 
 
 def resolved_grading(state: Any) -> tuple[bool, float | None]:
@@ -32,9 +22,12 @@ def resolved_grading(state: Any) -> tuple[bool, float | None]:
     export driven from CLOSE. Sessions seeded before ``SharedState.grading`` existed carry nothing and only those
     derive, reporting a null band because the band they actually applied was never recorded.
     """
-    recorded = recorded_grading(getattr(state, "grading", None))
-    if recorded is not None:
-        return recorded
+    recorded = getattr(state, "grading", None)
+    recorded = recorded if isinstance(recorded, dict) else {}
+    objective = str(recorded.get("objective") or "").strip()
+    if objective:
+        noise_pct = recorded.get("noise_pct")
+        return objective == GRADED_INTVTY, (float(noise_pct) if isinstance(noise_pct, (int, float)) else None)
     return (
         intvty_serving_grading_enabled(
             scriptable=framework_registry.is_scriptable(getattr(state, "framework", None)),

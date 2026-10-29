@@ -9,14 +9,31 @@ import json
 
 import pytest
 
-from hyperloom.agents.critic.runtime import session_memory as session_memory_module
 from hyperloom.agents.critic.runtime.errors import SessionMemoryError
-from hyperloom.agents.critic.runtime.session_memory import SessionMemory
+from hyperloom.agents.critic.runtime.session_memory import MergeResult, SessionMemory
 
 
 @pytest.fixture()
 def sm(tmp_path):
     return SessionMemory(root=tmp_path / "sm")
+
+
+def test_merge_result_to_dict_is_a_copy():
+    mr = MergeResult(
+        merged={"model": "m"},
+        explicit_keys=["model"],
+        from_memory_keys=["framework"],
+        missing_keys=["workload"],
+    )
+    d = mr.to_dict()
+    assert d == {
+        "merged": {"model": "m"},
+        "explicit_keys": ["model"],
+        "from_memory_keys": ["framework"],
+        "missing_keys": ["workload"],
+    }
+    d["merged"]["model"] = "changed"
+    assert mr.merged["model"] == "m"
 
 
 def test_session_dir_rejects_invalid_ids(sm):
@@ -42,10 +59,10 @@ def test_merge_context_rejects_non_dict(sm):
 
 def test_merge_context_fills_from_memory(sm):
     sm.save_context("s1", {"model": "m1", "framework": "sglang"})
-    result = sm.merge_context("s1", {"workload": "decode"})
+    result = sm.merge_context("s1", {"workload": "decode"}, persist=False)
     assert result.merged["model"] == "m1"
-    assert result.merged["framework"] == "sglang"
-    assert result.merged["workload"] == "decode"
+    assert "framework" in result.from_memory_keys
+    assert "workload" in result.explicit_keys
 
 
 def test_append_decision_writes_jsonl(sm):
@@ -73,10 +90,9 @@ def test_get_cached_priors_absent_and_malformed(sm):
     assert sm.get_cached_priors("s1", "bad_shape") is None
 
 
-def test_get_cached_priors_expired(sm, monkeypatch):
+def test_get_cached_priors_expired(sm):
     sm.put_cached_priors("s1", "k", [{"id": "x"}])
-    monkeypatch.setattr(session_memory_module.time, "time", lambda: 1e18)
-    assert sm.get_cached_priors("s1", "k") is None
+    assert sm.get_cached_priors("s1", "k", now=1e18) is None
 
 
 def test_put_cached_priors_rejects_non_list(sm):

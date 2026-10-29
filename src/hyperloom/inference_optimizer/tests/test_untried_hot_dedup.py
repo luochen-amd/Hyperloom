@@ -7,16 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
-from hyperloom.orchestrator.kernel import kernel_decisions as kd
+from hyperloom.orchestrator.kernel import _kernel_decisions as kd
 from hyperloom.orchestrator.state import kernel_decision_settings as kds
-
-
-@pytest.fixture(autouse=True)
-def _loose_gate(monkeypatch):
-    monkeypatch.setenv("HYPERLOOM_KERNEL_OPT_MIN_GPU_PCT", "1.0")
-    monkeypatch.setenv("HYPERLOOM_KERNEL_OPT_GATE_TOP_N", "10")
 
 
 def _state(hot, *, integrate_attempts=None, pending=None, controller=None):
@@ -58,7 +50,7 @@ def test_twin_ids_collapse_when_one_was_gated():
     hot = [_hot("k001", name="gemm_a8w8"), _hot("k002", name="gemm_a8w8")]
     state = _state(hot, integrate_attempts=_rejected_integrate("k001"))
 
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
     assert untried == []
 
 
@@ -67,7 +59,7 @@ def test_distinct_kernels_are_not_collapsed():
     hot = [_hot("k001", name="gemm_a8w8"), _hot("k002", name="attention_fwd")]
     state = _state(hot, integrate_attempts=_rejected_integrate("k001"))
 
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
     assert untried == ["k002"]
 
 
@@ -77,7 +69,7 @@ def test_an_attempt_on_another_source_does_not_retire_a_reassigned_ordinal():
     hot = [_hot("k001", name="gemm_a8w8")]
     state = _state(hot, integrate_attempts=_rejected_integrate("k001", src="other.py"))
 
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
     assert untried == ["k001"]
 
 
@@ -94,7 +86,7 @@ def test_a_queued_patch_counts_as_tried():
     }
     state = _state(hot, pending=pending)
 
-    assert kd.untried_hot_reusable_kernels(state) == []
+    assert kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10) == []
 
 
 def test_a_forge_nomination_retires_its_kernel_by_symbol():
@@ -112,7 +104,7 @@ def test_a_forge_nomination_retires_its_kernel_by_symbol():
     }
     state = _state(hot, pending=pending)
 
-    assert kd.untried_hot_reusable_kernels(state) == []
+    assert kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10) == []
 
 
 def test_an_operator_the_rewrite_controller_published_counts_as_tried():
@@ -132,7 +124,7 @@ def test_an_operator_the_rewrite_controller_published_counts_as_tried():
     }
     state = _state(hot, controller=controller)
 
-    assert kd.untried_hot_reusable_kernels(state) == []
+    assert kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10) == []
 
 
 def test_no_attempts_all_untried_but_deduped():
@@ -140,9 +132,22 @@ def test_no_attempts_all_untried_but_deduped():
     hot = [_hot("k001", name="gemm_a8w8"), _hot("k002", name="gemm_a8w8")]
     state = _state(hot)
 
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
     assert len(untried) == 1
     assert untried[0] in {"k001", "k002"}
+
+
+def test_geometry_only_shape_excluded_from_untried():
+    # A reusable kernel with a resolved source but shape_dispatchable=False (geometry-only provenance) fails the
+    # kernel-opt gate, so it must never enter the untried queue and spin KERNEL_AGENT.
+    geom = _hot("k001", name="combine_kernel")
+    geom["shape_dispatchable"] = False
+    ok = _hot("k002", name="gemm_a8w8")
+    ok["shape_dispatchable"] = True
+    state = _state([geom, ok])
+
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
+    assert untried == ["k002"]
 
 
 def test_forge_loop_integration_retires_its_hot_kernel_by_operator_name():
@@ -169,8 +174,18 @@ def test_forge_loop_integration_retires_its_hot_kernel_by_operator_name():
         }
     ]
 
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
     assert untried == []
+
+
+def test_missing_shape_dispatchable_field_stays_untried():
+    # TraceLens path never emits shape_dispatchable; absent field must be treated as dispatchable so the main path is
+    # not regressed.
+    hot = [_hot("k001", name="gemm_a8w8")]  # no shape_dispatchable key
+    state = _state(hot)
+
+    untried = kd.untried_hot_reusable_kernels(state, min_gpu_pct=1.0, top_n=10)
+    assert untried == ["k001"]
 
 
 def test_hot_kernel_floor_falls_back_on_an_unparseable_override(monkeypatch):

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import subprocess
 
-from kernelforge.workflows.forge_fusion.models import Recipe
-from kernelforge.workflows.forge_fusion.validate import (
+from kernelforge.fusion.models import Recipe
+from kernelforge.fusion.validate import (
     DecodeLoad,
     HarnessKernelRunner,
     SmokeServer,
@@ -19,9 +19,10 @@ from kernelforge.workflows.forge_fusion.validate import (
     _tail_text,
     _vllm_decode_probe,
     serving_smoke,
+    snr_db,
     validate_recipe,
 )
-from kernelforge.workflows.forge_fusion import validate
+from kernelforge.fusion import validate
 
 import urllib.request as _urllib_rq
 
@@ -188,6 +189,11 @@ class _Proc:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = rc
+
+
+def test_snr_zero_signal_returns_zero():
+    # noise>0 but signal==0 -> 0.0 branch (line 332)
+    assert snr_db([0.0, 0.0], [1.0, 1.0]) == 0.0
 
 
 def test_runtime_dir_honors_env(tmp_path, monkeypatch):
@@ -359,7 +365,7 @@ def test_parse_harness_json_skips_bad_line_uses_last_valid():
 
 
 def test_validate_parity_all_none_fails():
-    from kernelforge.workflows.forge_fusion.validate import BenchOutcome, CompileOutcome, ParitySample
+    from kernelforge.fusion.validate import BenchOutcome, CompileOutcome, ParitySample
 
     class R:
         def compile_check(self, r):
@@ -376,7 +382,7 @@ def test_validate_parity_all_none_fails():
 
 
 def test_validate_bench_no_timing_not_kept():
-    from kernelforge.workflows.forge_fusion.validate import BenchOutcome, CompileOutcome, ParitySample
+    from kernelforge.fusion.validate import BenchOutcome, CompileOutcome, ParitySample
 
     class R:
         def compile_check(self, r):
@@ -397,10 +403,10 @@ def test_apply_serving_gate_env_boot_failure_keeps_micro_keep(tmp_path, monkeypa
     """A MiniMax-style KV boot failure is not a fused-kernel loss."""
     from types import SimpleNamespace
 
-    from kernelforge.workflows.forge_fusion import serving_gate
-    from kernelforge.workflows.forge_fusion.models import ValidationResult
+    from kernelforge.fusion import serving_gate
+    from kernelforge.fusion.models import ValidationResult
 
-    from kernelforge.workflows.forge_fusion.validate import SMOKE_STAGE_STARTUP_CRASH, SmokeVerdict
+    from kernelforge.fusion.validate import SMOKE_STAGE_STARTUP_CRASH, SmokeVerdict
 
     monkeypatch.setattr(serving_gate, "_serving_check_enabled", lambda: True)
     captured = {}
@@ -453,10 +459,10 @@ def test_apply_serving_gate_env_boot_failure_keeps_micro_keep(tmp_path, monkeypa
 def test_apply_serving_gate_cuda_graph_crash_clears_keep(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from kernelforge.workflows.forge_fusion import serving_gate
-    from kernelforge.workflows.forge_fusion.models import ValidationResult
+    from kernelforge.fusion import serving_gate
+    from kernelforge.fusion.models import ValidationResult
 
-    from kernelforge.workflows.forge_fusion.validate import SMOKE_STAGE_DECODE_CRASH, SmokeVerdict
+    from kernelforge.fusion.validate import SMOKE_STAGE_DECODE_CRASH, SmokeVerdict
 
     monkeypatch.setattr(serving_gate, "_serving_check_enabled", lambda: True)
     monkeypatch.setattr(

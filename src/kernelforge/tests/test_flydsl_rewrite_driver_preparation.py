@@ -4,22 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import ast
-import errno
 import inspect
 import json
-import logging
 import time
 from pathlib import Path
 
 import pytest
 
 from kernelforge.config import Config
-from kernelforge.workflows.flydsl_rewrite import (
+from kernelforge.rewrite_by_flydsl import (
     driver_contract,
     flydsl_rewrite_driver_preparation as driver_preparation,
 )
-from kernelforge.workflows.flydsl_rewrite.spec import RewriteSpec
-from kernelforge.agent_backends.usage import UsageAccumulator
+from kernelforge.rewrite_by_flydsl.spec import RewriteSpec
+from kernelforge.tracker import UsageAccumulator
 
 
 def _spec(tmp_path: Path) -> RewriteSpec:
@@ -153,7 +151,7 @@ def test_preparation_is_independent_from_forge_loop():
     imported_modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     imported_modules.update(node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
 
-    assert not any(name.startswith("kernelforge.workflows.forge_loop") for name in imported_modules)
+    assert not any(name.startswith("kernelforge.loop") for name in imported_modules)
 
 
 def test_missing_driver_is_authored_without_modifying_kernel_evidence(
@@ -345,32 +343,6 @@ def test_failed_destination_preflight_restores_the_original_driver(
     assert driver.read_text(encoding="utf-8") == "ORIGINAL = True\n"
     assert result.preflight is not None
     assert result.preflight.detail == "wrong cases"
-
-
-def test_a_preflight_that_cannot_spawn_the_driver_restores_it_and_names_the_error(tmp_path, monkeypatch, caplog):
-    driver = tmp_path / "rewrite_driver.py"
-    driver.write_text("ORIGINAL = True\n", encoding="utf-8")
-    spawn = OSError(errno.EMFILE, "Too many open files")
-
-    async def fake_agent(**kwargs):
-        kwargs["turn"].stage_driver.write_text("CANDIDATE = True\n", encoding="utf-8")
-        return "done"
-
-    def preflight(*_args, **_kwargs):
-        raise spawn
-
-    monkeypatch.setattr(driver_preparation, "_run_agent", fake_agent)
-    monkeypatch.setattr(driver_preparation, "preflight_rewrite_driver", preflight)
-    with caplog.at_level(logging.WARNING, logger=driver_preparation.log.name):
-        result = _prepare(tmp_path, driver, deadline_unix=time.time() + 300, initial_preflight=_failed_preflight())
-
-    assert (result.ok, result.failure_class) == (False, driver_preparation.DRIVER_PREPARATION_FAILED)
-    assert result.error == "deterministic preflight raised OSError: [Errno 24] Too many open files"
-    assert driver.read_text(encoding="utf-8") == "ORIGINAL = True\n"
-    (record,) = [
-        r for r in caplog.records if r.getMessage().startswith("driver preparation attempt 1: preflight raised: ")
-    ]
-    assert record.exc_info[1] is spawn
 
 
 def test_invalid_invocation_spec_fails_before_starting_an_agent(

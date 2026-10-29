@@ -5,9 +5,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from kernelforge.workflows.forge_loop.memory import knowledge_integration as integ
+from kernelforge.loop import knowledge_integration as integ
 from kernelforge.knowledge.kb_store.identity.run import LoopKernel
-from kernelforge.workflows.forge_loop.memory.knowledge_integration import ExperiencePublication, WarmStartHarness
+from kernelforge.loop.knowledge_integration import ExperiencePublication, WarmStartHarness
 import pytest
 
 
@@ -30,6 +30,37 @@ def _init_repo(tmp_path: Path) -> Path:
 
 # --------------------------------------------------------------------------- # git helpers
 # --------------------------------------------------------------------------- #
+def test_git_head_returns_sha(tmp_path):
+    repo = _init_repo(tmp_path)
+    head = integ.git_head(str(repo))
+    assert len(head) == 40
+
+
+def test_git_head_empty_on_failure(tmp_path):
+    assert integ.git_head(str(tmp_path / "not-a-repo")) == ""
+
+
+def test_git_checkout_branch_empty_branch_noop(tmp_path):
+    repo = _init_repo(tmp_path)
+    assert integ.git_checkout_branch(str(repo), "") == ""
+
+
+def test_git_checkout_branch_error_on_bad_workspace():
+    out = integ.git_checkout_branch("/no/such/dir/xyz", "b")
+    assert out != ""
+
+
+def test_git_checkout_branch_reports_exception(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("git missing")
+
+    monkeypatch.setattr(integ, "git", boom)
+    out = integ.git_checkout_branch(str(repo), "b")
+    assert out.startswith("checkout failed:")
+
+
 def test_git_cumulative_diff_empty_without_base(tmp_path):
     repo = _init_repo(tmp_path)
     assert integ._git_cumulative_diff(str(repo), "") == ""

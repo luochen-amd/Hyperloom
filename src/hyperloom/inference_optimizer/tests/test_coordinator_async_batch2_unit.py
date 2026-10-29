@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,12 +28,11 @@ from hyperloom.orchestrator.actions.executors.explore import STACK_REVALIDATE_SO
 from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.bus.message_bus import Message
 from hyperloom.inference_optimizer.breakdown.stop_reasons import PATCH_RECOVERY_INCOMPLETE_STOP_REASON
-from hyperloom.orchestrator.loop._promote_outcome import IntegrateRecoveryIncomplete
-from hyperloom.orchestrator.state.task_registry import Task, TaskSpec
+from hyperloom.orchestrator.loop.writeback import IntegrateRecoveryIncomplete
+from hyperloom.orchestrator.state.task_registry import Task
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.orchestrator.actions.executors import _patch_artifacts as patch_artifacts
 from hyperloom.orchestrator.actions.executors import _patch_sources as patch_sources
-from hyperloom.orchestrator.loop.verdicts import CriticRuling
 
 
 def _idle_intent() -> Intent:
@@ -69,12 +67,10 @@ async def test_resume_rolls_back_recipe_checkout_and_kernel(
         "_maybe_revert_kernel_patch",
         lambda result: kernel_restores.append(result) or {"status": "ok"},
     )
-    task, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="replay_warm_recipe",
-            params={},
-            idempotency_key="resume-warm",
-        ),
+    task = await coord.tasks.create(
+        kind="replay_warm_recipe",
+        params={},
+        idempotency_key="resume-warm",
     )
     coord.shared_state.warm_replay_pending = {
         "task_id": task.task_id,
@@ -283,10 +279,8 @@ async def test_context_reader_failure_carries_traceback_to_the_log(
     provider = ContextProvider(
         shared_state=coord.shared_state,
         inbox_reader=coord.conversation._context_inbox_reader,
-        analysis_reader=coord.conversation._context_analysis_reader,
         recent_outcomes_reader=coord.conversation._context_recent_outcomes_reader,
         running_tasks_reader=coord.conversation._context_running_tasks_reader,
-        reference_reader=coord.conversation._context_reference_reader,
     )
 
     with caplog.at_level(logging.ERROR, logger="hyperloom.orchestrator.roles.mcp_context_tools"):
@@ -625,18 +619,16 @@ async def test_resume_does_not_halt_on_a_kept_delete_the_git_tree_already_commit
 
 def _captured_keep(tmp_path: Path, tree: Path, name: str, rels: list[str], deleted: tuple[str, ...] = ()) -> dict:
     """Commit the tree's current edits as a KEEP and snapshot them the way integrate_patch does."""
-    from hyperloom.orchestrator.source_snapshot import SourceLayer, snapshot_source_layer
+    from hyperloom.orchestrator.source_snapshot import snapshot_source_layer
 
     _git(tree, "add", "-A")
     _git(tree, "commit", "-q", "-m", f"hyperloom KEEP {name}")
     snap = snapshot_source_layer(
-        SourceLayer(
-            framework_root=tree,
-            base_sha=_git(tree, "rev-parse", "HEAD").strip(),
-            rel_paths=rels,
-            declared_ops=dict.fromkeys(deleted, "delete"),
-        ),
+        framework_root=tree,
+        base_sha=_git(tree, "rev-parse", "HEAD").strip(),
+        rel_paths=rels,
         dest_dir=tmp_path / "optimization_stack" / "src" / name,
+        declared_ops=dict.fromkeys(deleted, "delete"),
     )
     assert snap is not None
     return {
@@ -782,9 +774,7 @@ def pending_candidate(coord: Coordinator, tmp_path: Path, monkeypatch):
             if two_artifacts:
                 params["artifacts"].append({"source": str(source), "target": str(root / "created.json")})
         coord.shared_state.record_specialist_patch_verdict("spec-restore", "approve")
-        task, _ = await coord.tasks.create_or_return_existing(
-            TaskSpec(kind="integrate_patch", params=params, idempotency_key="pending-restore")
-        )
+        task = await coord.tasks.create(kind="integrate_patch", params=params, idempotency_key="pending-restore")
         result = await ip.IntegratePatchExecutor(session_dir=coord.session_dir)(
             RunnerContext(task=task, lease=None, extra={"shared_state": coord.shared_state})
         )
@@ -963,18 +953,16 @@ async def test_reused_output_directory_never_reuses_prior_attempt_preimages(coor
         source = workspace / "cfg.json"
         source.write_text(content)
         coord.shared_state.record_specialist_patch_verdict(sid, "approve")
-        task, _ = await coord.tasks.create_or_return_existing(
-            TaskSpec(
-                kind="integrate_patch",
-                idempotency_key=sid,
-                params={
-                    "specialist_task_id": sid,
-                    "framework_source_root": str(root),
-                    "output_dir": str(output),
-                    "artifacts": [{"source": str(source), "target": str(target)}],
-                    "apply_only": True,
-                },
-            ),
+        task = await coord.tasks.create(
+            kind="integrate_patch",
+            idempotency_key=sid,
+            params={
+                "specialist_task_id": sid,
+                "framework_source_root": str(root),
+                "output_dir": str(output),
+                "artifacts": [{"source": str(source), "target": str(target)}],
+                "apply_only": True,
+            },
         )
         result = await executor(RunnerContext(task=task, lease=None, extra={"shared_state": coord.shared_state}))
         assert result["status"] == "applied_no_bench", result
@@ -1330,9 +1318,7 @@ def ordinary_integrate_completion(coord: Coordinator, tmp_path: Path):
     anchor = deepcopy(coord.shared_state.current_best)
 
     async def prepare(*, phase="ready", status="kept", error_class="", recovery_errors=None, marker_task_id=None):
-        task, _ = await coord.tasks.create_or_return_existing(
-            TaskSpec(kind="integrate_patch", params={}, idempotency_key="ordinary-integrate")
-        )
+        task = await coord.tasks.create(kind="integrate_patch", params={}, idempotency_key="ordinary-integrate")
         pending = {
             "task_id": task.task_id if marker_task_id is None else marker_task_id,
             "workspace": str(backup.parent),
@@ -1578,9 +1564,7 @@ async def test_resume_consistency_replays_pending_integrate_keep(coord: Coordina
 @pytest.mark.asyncio
 async def test_resume_consistency_rolls_back_pending_integrate(coord: Coordinator, monkeypatch) -> None:
     coord.writeback._resumed_from["is_resume"] = True
-    await coord.tasks.create_or_return_existing(
-        TaskSpec(kind="integrate_patch", params={}, idempotency_key="ti-roll", task_id="ti-roll")
-    )
+    await coord.tasks.create(kind="integrate_patch", params={}, idempotency_key="ti-roll", task_id="ti-roll")
     coord.shared_state.pending_integrate = {
         "task_id": "ti-roll",
         "framework_source_root": "/tmp/framework",
@@ -1627,9 +1611,7 @@ async def test_resume_settles_an_env_only_integrate_from_its_task_row(
     environment from the stack. A recorded revert still just clears.
     """
     coord.writeback._resumed_from["is_resume"] = True
-    task, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(kind="integrate_patch", params={}, idempotency_key="ti-env", task_id="ti-env")
-    )
+    task = await coord.tasks.create(kind="integrate_patch", params={}, idempotency_key="ti-env", task_id="ti-env")
     await coord.tasks.transition(task.task_id, "running")
     result = {
         "kind": "integrate_patch",
@@ -1685,7 +1667,7 @@ async def test_resume_consistency_keeps_sentinel_when_event_scan_fails(
     coord.shared_state.pending_integrate = dict(sentinel)
 
     async def _boom(*_args, **_kwargs):
-        raise sqlite3.DatabaseError("database disk image is malformed")
+        raise RuntimeError("database disk image is malformed")
 
     monkeypatch.setattr(coord.bus, "tail", _boom)
 
@@ -2044,8 +2026,10 @@ async def test_replay_for_resume_rebuilds_undecided_proposals(coord: Coordinator
             "critic", "orchestration", "review_verdict", {"target_proposal_msg_id": p2.msg_id, "verdict": "approve"}
         )
     )
-    await coord.writeback.replay_for_resume()
-    assert list(coord.state.pending_proposals) == [p1.msg_id]
+    out = await coord.writeback.replay_for_resume()
+    assert out["pending_restored"] == 1
+    assert p1.msg_id in coord.state.pending_proposals
+    assert p2.msg_id not in coord.state.pending_proposals
 
 
 @pytest.mark.asyncio
@@ -2060,34 +2044,31 @@ async def test_replay_for_resume_verdict_map_backcompat(coord: Coordinator) -> N
             {"target_proposal_msg_id": p1.msg_id, "verdict_map": {"x": "ok"}},
         )
     )
-    await coord.writeback.replay_for_resume()
+    out = await coord.writeback.replay_for_resume()
+    assert out["verdicts_seen"] == 1
     assert p1.msg_id not in coord.state.pending_proposals
 
 
 # -- _context_analysis_reader fallback (path read) --------------------------
-def test_context_analysis_reader_strips_base64_from_the_cached_text(coord: Coordinator) -> None:
-    coord.shared_state.last_trace_analyze = {
-        "analysis_md_text": "# Report\n![chart](data:image/png;base64,iVBORw0KGgo)\nbody\n",
-        "analysis_md_path": "/nonexistent/analysis.md",
-    }
-    out = coord.conversation._context_analysis_reader()
-    assert "iVBORw0KGgo" not in out
-    assert "# Report" in out and "body" in out
-
-
 def test_context_analysis_reader_falls_back_to_the_recorded_path(
     coord: Coordinator,
     tmp_path,
+    monkeypatch,
 ) -> None:
     md = tmp_path / "analysis.md"
     md.write_text("# roofline snapshot\n", encoding="utf-8")
     coord.shared_state.last_trace_analyze = {"analysis_md_path": str(md)}
+    monkeypatch.setattr(coord.shared_state, "_format_analysis_md_full", lambda: "")
     out = coord.conversation._context_analysis_reader()
     assert "roofline snapshot" in out
 
 
-def test_context_analysis_reader_unreadable_path(coord: Coordinator) -> None:
+def test_context_analysis_reader_unreadable_path(
+    coord: Coordinator,
+    monkeypatch,
+) -> None:
     coord.shared_state.last_trace_analyze = {"analysis_md_path": "/nonexistent/dir/analysis.md"}
+    monkeypatch.setattr(coord.shared_state, "_format_analysis_md_full", lambda: "")
     out = coord.conversation._context_analysis_reader()
     assert "unreadable" in out or "no analysis.md" in out
 
@@ -2120,12 +2101,10 @@ async def test_pump_dispatcher_noop_when_empty(coord: Coordinator) -> None:
 @pytest.mark.asyncio
 async def test_pump_dispatcher_explore_promotes(coord: Coordinator, monkeypatch) -> None:
     coord.shared_state.baseline_tput = 800.0
-    task, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="explore",
-            params={},
-            idempotency_key="disp-explore",
-        ),
+    task = await coord.tasks.create(
+        kind="explore",
+        params={},
+        idempotency_key="disp-explore",
     )
 
     async def fake_run(t, **kw):
@@ -2153,12 +2132,10 @@ async def test_pump_dispatcher_explore_promotes(coord: Coordinator, monkeypatch)
 @pytest.mark.asyncio
 async def test_pump_dispatcher_specialist_bookkeeping(coord: Coordinator, monkeypatch) -> None:
     monkeypatch.setenv("INFERENCE_OPTIMIZER_SPECIALIST_AUTO_RETRY", "0")
-    await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="specialist",
-            params={"domain": "kernel_agent"},
-            idempotency_key="disp-spec",
-        ),
+    await coord.tasks.create(
+        kind="specialist",
+        params={"domain": "kernel_agent"},
+        idempotency_key="disp-spec",
     )
 
     async def fake_run(t, **kw):
@@ -2180,12 +2157,10 @@ async def test_pump_dispatcher_specialist_bookkeeping(coord: Coordinator, monkey
 
 @pytest.mark.asyncio
 async def test_pump_dispatcher_absorbs_spawn_exception(coord: Coordinator, monkeypatch) -> None:
-    await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="explore",
-            params={},
-            idempotency_key="disp-boom",
-        ),
+    await coord.tasks.create(
+        kind="explore",
+        params={},
+        idempotency_key="disp-boom",
     )
 
     async def fake_run(t, **kw):
@@ -2199,15 +2174,13 @@ async def test_pump_dispatcher_absorbs_spawn_exception(coord: Coordinator, monke
 @pytest.mark.asyncio
 async def test_compose_prompt_has_no_specialist_status_block(coord: Coordinator) -> None:
     """No periodic specialist block: it can never observe a live specialist."""
-    spec, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="specialist",
-            params={"domain": "serving_specialist"},
-            idempotency_key="visible-spec",
-        ),
+    spec = await coord.tasks.create(
+        kind="specialist",
+        params={"domain": "serving_specialist"},
+        idempotency_key="visible-spec",
     )
     await coord.tasks.transition(spec.task_id, "running")
-    out = (await coord.conversation.compose_prompt("orchestration")).text
+    out = await coord.conversation.compose_prompt("orchestration")
     assert "Specialist health" not in out
     assert "stale" not in out.lower()
 
@@ -2215,12 +2188,10 @@ async def test_compose_prompt_has_no_specialist_status_block(coord: Coordinator)
 @pytest.mark.asyncio
 async def test_running_tasks_reader_sees_live_specialist(coord: Coordinator) -> None:
     """``get_running_tasks`` is the on-demand path and is not turn-bound."""
-    spec, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="specialist",
-            params={"domain": "serving_specialist", "gap_canonical_id": "gap.xyz"},
-            idempotency_key="queryable-spec",
-        ),
+    spec = await coord.tasks.create(
+        kind="specialist",
+        params={"domain": "serving_specialist", "gap_canonical_id": "gap.xyz"},
+        idempotency_key="queryable-spec",
     )
     await coord.tasks.transition(spec.task_id, "running")
     out = coord.conversation._context_running_tasks_reader()
@@ -2822,16 +2793,14 @@ async def test_direct_integrate_proposal_inherits_specialist_owner(
     coord: Coordinator,
     monkeypatch,
 ) -> None:
-    specialist, _ = await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind="specialist",
-            params={
-                "source_phase": "FRAMEWORK_AGENT",
-                "domain": "serving_specialist",
-                "gap_layer": "framework",
-            },
-            idempotency_key="owner-source",
-        ),
+    specialist = await coord.tasks.create(
+        kind="specialist",
+        params={
+            "source_phase": "FRAMEWORK_AGENT",
+            "domain": "serving_specialist",
+            "gap_layer": "framework",
+        },
+        idempotency_key="owner-source",
     )
     monkeypatch.setattr(
         coord.dispatcher,
@@ -2933,6 +2902,17 @@ async def test_materialize_explore_proposal_id_does_not_break_content_dedup(
     queued = [task for task in await coord.tasks.queued() if task.kind == "explore"]
     assert len(queued) == 1
     assert queued[0].params["proposal_msg_id"] == "prop-first"
+
+
+@pytest.mark.asyncio
+async def test_materialize_sweep_stamps_base(coord: Coordinator) -> None:
+    coord.shared_state.baseline_tput = 800.0
+    coord.shared_state.current_best = {"tput": 900.0, "extra_server_args": "--tp 1"}
+    coord.shared_state.baseline_config_path = "/tmp/base.yaml"
+    pending = _pending("sweep", {"params": {}}, msg_id="prop-sweep")
+    await coord.proposals.materialize_approved_proposal(pending)
+    task = await coord.tasks.get((await coord.tasks.queued())[0].task_id)
+    assert task.kind == "sweep"
 
 
 @pytest.mark.asyncio
@@ -3208,15 +3188,13 @@ async def test_pump_framework_agent_phase_done_noop(coord: Coordinator) -> None:
 @pytest.mark.asyncio
 async def test_pump_framework_agent_skips_when_task_inflight(coord: Coordinator) -> None:
     _enter_framework(coord)
-    await coord.tasks.create_or_return_existing(
-        TaskSpec(kind="framework_agent", params={}, idempotency_key="fpr-inflight")
-    )
+    await coord.tasks.create(kind="framework_agent", params={}, idempotency_key="fpr-inflight")
     await coord.phase_framework._pump_framework_agent_phase()
 
 
 @pytest.mark.asyncio
 async def test_pump_framework_agent_discover_empty_marks_done(coord: Coordinator, monkeypatch) -> None:
-    from hyperloom.orchestrator.phases import framework_discovery
+    from hyperloom.orchestrator.phases import framework as _phase_framework
 
     _enter_framework(coord)
     # Arm disabled: discovery exhaustion falls back to the historical exit (the enabled arm pivots to local
@@ -3224,7 +3202,7 @@ async def test_pump_framework_agent_discover_empty_marks_done(coord: Coordinator
     coord.shared_state.framework_local_explore_enabled = False
     coord.shared_state.framework_agent_discover_failures = 0
     # Discovery has spent its retry budget, so the upstream lane declines and the tick reaches the terminal rung.
-    coord.shared_state.framework_agent_empty_discoveries = framework_discovery.DISCOVER_FAILURE_RETRY_LIMIT
+    coord.shared_state.framework_agent_empty_discoveries = _phase_framework.DISCOVER_FAILURE_RETRY_LIMIT
     monkeypatch.setattr(coord.phase_framework, "_select_next_framework_agent_candidate", lambda **_k: None)
     monkeypatch.setattr(coord.phase_framework, "_record_framework_agent_phase_done", lambda **k: None)
     await coord.phase_framework._pump_framework_agent_phase()
@@ -3293,7 +3271,8 @@ async def test_framework_agent_reject_records_critic_denied(coord: Coordinator, 
     await coord.router._handle_single_verdict(
         source="critic",
         pending=pending,
-        ruling=CriticRuling(verdict="reject", reasoning="unsafe"),
+        verdict="reject",
+        reasoning="unsafe",
     )
     prog = coord.shared_state.framework_agent_phase_progress
     assert any(p.get("status") == "critic_denied" and p.get("candidate_id") == "c1" for p in prog)
@@ -3327,7 +3306,8 @@ async def test_framework_agent_approve_routes_to_enqueue(coord: Coordinator, mon
     await coord.router._handle_single_verdict(
         source="critic",
         pending=pending,
-        ruling=CriticRuling(verdict="approve", reasoning="ok"),
+        verdict="approve",
+        reasoning="ok",
     )
     assert enq
 

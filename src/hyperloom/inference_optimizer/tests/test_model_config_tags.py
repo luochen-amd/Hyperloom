@@ -13,8 +13,7 @@ from typing import Any
 import pytest
 
 from hyperloom.inference_optimizer.cli.model_gate import _load_model_config_tags
-from hyperloom.orchestrator.knowledge.recipe_kb_t0 import T0AnchorRequest, run_t0_anchor
-from hyperloom.inference_optimizer.recipe_snapshot_constants import RecipeIdentity
+from hyperloom.orchestrator.knowledge.recipe_kb_t0 import run_t0_anchor
 from hyperloom.orchestrator.knowledge.recipe_kb import (
     LocalRecipeStore,
     RecipeKB,
@@ -130,15 +129,13 @@ def kb(tmp_path: Path) -> RecipeKB:
 
 def _cid(state: _FakeSharedState, workload: str, hw: str) -> str:
     return recipe_canonical_id(
-        RecipeIdentity(
-            model=workload,
-            hardware=hw,
-            framework_name=state.framework,
-            framework_version=state.framework_version,
-            precision=state.precision,
-            model_type=str(getattr(state, "model_type", "") or ""),
-            architectures=getattr(state, "model_architectures", None) or [],
-        )
+        model=workload,
+        hardware=hw,
+        framework_name=state.framework,
+        framework_version=state.framework_version,
+        precision=state.precision,
+        model_type=str(getattr(state, "model_type", "") or ""),
+        architectures=getattr(state, "model_architectures", None) or [],
     )
 
 
@@ -152,7 +149,9 @@ def test_t0_anchor_stamps_architecture_tags(kb: RecipeKB, tmp_path: Path) -> Non
     run_t0_anchor(
         kb,
         state,
-        T0AnchorRequest(workload="Llama-3.1-8B-MyFinetune", hw="MI300X", extra_attrs={"framework_name": "sglang"}),
+        workload="Llama-3.1-8B-MyFinetune",
+        hw="MI300X",
+        extra_attrs={"framework_name": "sglang"},
         session_dir=sd,
     )
     row = kb.get_recipe(
@@ -171,7 +170,12 @@ def test_t0_anchor_skips_empty_architecture_tags(
     sd.mkdir()
     state = _FakeSharedState()  # no config.json tags
     run_t0_anchor(
-        kb, state, T0AnchorRequest(workload="m", hw="mi300x", extra_attrs={"framework_name": "sglang"}), session_dir=sd
+        kb,
+        state,
+        workload="m",
+        hw="mi300x",
+        extra_attrs={"framework_name": "sglang"},
+        session_dir=sd,
     )
     row = kb.get_recipe(canonical_id=_cid(state, "m", "mi300x"))
     assert row is not None

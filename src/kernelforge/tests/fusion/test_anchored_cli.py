@@ -10,12 +10,11 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
-from kernelforge.workflows.forge_fusion import agent_selection
-from kernelforge.workflows.forge_fusion import discovery_stage
-from kernelforge.workflows.forge_fusion import pipeline as cli_module
-from kernelforge.cli.forge_fuse_command import forge_fuse as main
-from kernelforge.workflows.forge_fusion.models import Diagnosis
-from kernelforge.workflows.forge_fusion.report import ANCHOR_REPORT_NAME, ANCHOR_RESOLVED_VERDICT
+from kernelforge.fusion import agent_selection
+from kernelforge.fusion import command as cli_module
+from kernelforge.fusion.command import run as main
+from kernelforge.fusion.models import Diagnosis
+from kernelforge.fusion.report import ANCHOR_REPORT_NAME, ANCHOR_RESOLVED_VERDICT
 
 ANCHOR = (
     "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16tofloat32_copy_kernel_cuda"
@@ -163,15 +162,15 @@ class TestUsage:
             seen.update(kwargs, target=target, report=report)
             return []
 
-        monkeypatch.setattr(discovery_stage, "discover_anchored_recipes", spy)
+        monkeypatch.setattr(cli_module, "discover_anchored_recipes", spy)
         monkeypatch.setattr(
             cli_module,
             "_create_agent_backend",
             lambda *_a: SimpleNamespace(name="codex", runtime=SimpleNamespace(model="m", sandbox_mode="bypass")),
         )
-        monkeypatch.setattr(discovery_stage, "registered_agent_llm_fn", lambda *_a, **_k: lambda _p: "[]")
+        monkeypatch.setattr(cli_module, "registered_agent_llm_fn", lambda *_a, **_k: lambda _p: "[]")
         monkeypatch.setattr(
-            discovery_stage, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
+            cli_module, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
         )
 
         res = hz.run("--fuse-kernel", ANCHOR, "--no-author", "--no-validate", "--discover", "patterns")
@@ -196,9 +195,9 @@ class TestDiscovery:
 
             return _fn
 
-        monkeypatch.setattr(discovery_stage, "registered_agent_llm_fn", fake_agent)
+        monkeypatch.setattr(cli_module, "registered_agent_llm_fn", fake_agent)
         monkeypatch.setattr(
-            discovery_stage, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
+            cli_module, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
         )
         return captured
 
@@ -243,13 +242,13 @@ def test_the_campaign_is_handed_a_concrete_agent_provider(tmp_path, monkeypatch)
         "_create_agent_backend",
         lambda *_a: SimpleNamespace(name="claude", runtime=SimpleNamespace(model="m", sandbox_mode="bypass")),
     )
-    monkeypatch.setattr(discovery_stage, "registered_agent_llm_fn", lambda *_a, **_k: lambda _p: "[]")
+    monkeypatch.setattr(cli_module, "registered_agent_llm_fn", lambda *_a, **_k: lambda _p: "[]")
     monkeypatch.setattr(
-        discovery_stage, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
+        cli_module, "resolve_framework_source_file", lambda *a, **k: (str(hz.source), "path convention")
     )
     monkeypatch.setattr(agent_selection, "_resolve_agent_choice", lambda backend, model: ("claude", "m"))
     monkeypatch.setattr(cli_module, "_run_fusion_autoloop", spy)
-    monkeypatch.setattr(discovery_stage, "build_recipes", lambda *a, **k: [_recipe(hz)])
+    monkeypatch.setattr(cli_module, "build_recipes", lambda *a, **k: [_recipe(hz)])
 
     hz.run("--discover", "patterns")
 
@@ -257,7 +256,7 @@ def test_the_campaign_is_handed_a_concrete_agent_provider(tmp_path, monkeypatch)
 
 
 def _recipe(hz):
-    from kernelforge.workflows.forge_fusion.models import Recipe
+    from kernelforge.fusion.models import Recipe
 
     return Recipe(
         pattern_id="residual_add_rmsnorm",

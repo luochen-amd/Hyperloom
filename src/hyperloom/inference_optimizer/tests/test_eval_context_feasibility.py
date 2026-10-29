@@ -6,8 +6,6 @@ import pytest
 
 from hyperloom.orchestrator.actions.executors import _accuracy_gate as ag
 from hyperloom.orchestrator.state.shared_state import SharedState
-from hyperloom.orchestrator.kernel import integrate_accuracy as integrate_accuracy
-from hyperloom.orchestrator.kernel import _integrate_outcomes as integrate_outcomes
 
 # The generation budget the harness requests for gsm8k.
 GSM8K_GEN_TOKENS = 2048
@@ -93,16 +91,17 @@ class TestInfeasibleEvalIsAFault:
 
 
 class TestGradeMarksTheRoundInfeasible:
-    """``grade_integrate_accuracy`` must separate "eval broke" from "eval cannot run here"."""
+    """``_grade_integrate_accuracy`` must separate "eval broke" from "eval cannot run here"."""
 
     @staticmethod
     def _grade(monkeypatch, tmp_path, server_args):
+        from hyperloom.orchestrator.kernel import request_handlers as rh
 
         # No score anywhere: the state this bug is about.
-        monkeypatch.setattr(integrate_outcomes, "_maybe_revert_kernel_patch", lambda *_a, **_k: {})
+        monkeypatch.setattr(rh, "_maybe_revert_kernel_patch", lambda *_a, **_k: {})
         monkeypatch.setenv("MAX_MODEL_LEN", "6144")
         monkeypatch.delenv("HYPERLOOM_EVAL_MAX_TOKENS", raising=False)
-        return integrate_accuracy.grade_integrate_accuracy(
+        return rh._grade_integrate_accuracy(
             {"accuracy": None},
             baseline_accuracy=0.0,
             workspace=tmp_path,

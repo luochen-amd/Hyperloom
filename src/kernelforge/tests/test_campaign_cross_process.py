@@ -8,20 +8,17 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 
-from kernelforge.tests._experiment_records import persisted_experiments
-from kernelforge.tests.conftest import SRC_ROOT, silence_jit_rebuild
+from kernelforge.tests.conftest import SRC_ROOT
 
-import kernelforge.workflows.forge_loop.iteration.runner as runner_module
-from kernelforge.workflows.forge_loop.campaign.archive import CandidateArchive
-from kernelforge.workflows.forge_loop.memory.experience import ExperienceLedger
-from kernelforge.workflows.forge_loop.campaign.run_state import LoopStateStore
-from kernelforge.workflows.forge_loop.iteration.runner import IterationConfig, IterationLoop, IterationResult
-from kernelforge.workflows.forge_loop.campaign.experiment import ExperimentTracker
-from kernelforge.workflows.forge_loop.iteration import campaign_runtime
+import kernelforge.loop.runner as runner_module
+from kernelforge.loop.archive import CandidateArchive
+from kernelforge.loop.experience import ExperienceLedger
+from kernelforge.loop.run_state import LoopStateStore
+from kernelforge.loop.runner import IterationConfig, IterationLoop, IterationResult
+from kernelforge.tracker import ExperimentTracker
 
 
 # The stand-in for "budget is not what this test is about"; it has to clear the
@@ -54,7 +51,7 @@ def _initialize_workspace(tmp_path, monkeypatch):
         check=True,
         capture_output=True,
     )
-    silence_jit_rebuild(monkeypatch)
+    monkeypatch.setattr(runner_module, "force_jit_rebuild", lambda _files: None)
     return workspace, kernel, driver
 
 
@@ -101,7 +98,7 @@ def test_two_sessions_preserve_lineage_history_and_global_ids(tmp_path, monkeypa
         nonlocal attempt
         attempt += 1
         session_sink["plan"] = f"attempt {attempt}"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + f"\n# attempt {attempt}\n")
         return f"attempt {attempt}"
 
@@ -132,7 +129,7 @@ def test_two_sessions_preserve_lineage_history_and_global_ids(tmp_path, monkeypa
     assert state.cumulative.iterations == 4
 
     experiments = sorted(
-        persisted_experiments(tracker.dir),
+        tracker.list_experiments(),
         key=lambda experiment: experiment.segment_index,
     )
     assert [experiment.segment_index for experiment in experiments] == [1, 2]
@@ -215,7 +212,7 @@ def test_published_keep_survives_interruption_resume_and_later_failure(
         session_sink["plan"] = f"candidate {attempt}"
         session_sink["end_reason"] = "candidate_submitted" if attempt == 1 else "turn_cap"
         session_sink["turns"] = 10 if attempt == 1 else 100
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + f"\n# candidate {attempt}\n")
         return f"candidate {attempt}"
 
@@ -278,7 +275,7 @@ def test_published_keep_survives_interruption_resume_and_later_failure(
     final_report = (root / "optimization_report.md").read_text()
     history = (root / "optimization_history.md").read_text()
     experiments = sorted(
-        persisted_experiments(tracker.dir),
+        tracker.list_experiments(),
         key=lambda experiment: experiment.segment_index,
     )
 
@@ -300,7 +297,7 @@ def test_resume_recovers_keep_committed_before_state_checkpoint(tmp_path, monkey
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "recover committed candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# verified candidate\n")
         return "verified candidate"
 
@@ -376,7 +373,7 @@ def test_resume_clears_reconciled_pending_keep(
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "recover committed candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# candidate\n")
         return "verified candidate"
 
@@ -425,7 +422,7 @@ def test_resume_ends_the_relay_blockage_epoch_of_a_recovered_keep(tmp_path, monk
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "recover committed candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# candidate\n")
         return "verified candidate"
 
@@ -457,7 +454,7 @@ def test_resume_repairs_publication_after_state_advanced_once(tmp_path, monkeypa
     workspace, kernel, driver = _initialize_workspace(tmp_path, monkeypatch)
     tracker = ExperimentTracker(workspace / "forge_experiments")
     monkeypatch.setattr(IterationLoop, "run_one_iteration", _successful_iteration)
-    original_publish = campaign_runtime.BestResultPublisher.publish
+    original_publish = runner_module.BestResultPublisher.publish
     publish_calls = 0
 
     def interrupt_publication(self, *args, **kwargs):
@@ -468,14 +465,14 @@ def test_resume_repairs_publication_after_state_advanced_once(tmp_path, monkeypa
         return original_publish(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        campaign_runtime.BestResultPublisher,
+        runner_module.BestResultPublisher,
         "publish",
         interrupt_publication,
     )
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "state advanced candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# state advanced candidate\n")
         return "state advanced candidate"
 
@@ -522,7 +519,7 @@ def test_resume_discards_pending_keep_when_commit_never_happened(tmp_path, monke
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "uncommitted verified candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# uncommitted candidate\n")
         return "uncommitted candidate"
 
@@ -580,7 +577,7 @@ def test_resume_rejects_pending_keep_with_unexpected_child_commit(
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "expected candidate"
-        campaign_runtime.Path(kernel_path).write_text("def kernel():\n    return 2\n")
+        runner_module.Path(kernel_path).write_text("def kernel():\n    return 2\n")
         return "expected candidate"
 
     first = _make_loop(
@@ -632,7 +629,7 @@ def test_resume_repairs_best_views_from_run_state_before_agent(tmp_path, monkeyp
 
     async def editing_agent(kernel_path, _history, session_sink):
         session_sink["plan"] = "durable state candidate"
-        path = Path(kernel_path)
+        path = runner_module.Path(kernel_path)
         path.write_text(path.read_text() + "\n# durable state candidate\n")
         return "durable state candidate"
 
@@ -686,8 +683,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from kernelforge.workflows.forge_loop.iteration.runner import IterationConfig, IterationLoop, LoopAgents
-from kernelforge.workflows.forge_loop.campaign.experiment import ExperimentTracker
+from kernelforge.loop.runner import IterationConfig, IterationLoop, LoopAgents
+from kernelforge.tracker import ExperimentTracker
 
 
 class FakeUsage:

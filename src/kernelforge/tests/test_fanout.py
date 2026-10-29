@@ -14,13 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from kernelforge.workflows.forge_loop.bootstrap import lanes as cli_lanes
+from kernelforge.cli import lanes as cli_lanes
 from kernelforge.config import Config
-from kernelforge.workflows.forge_loop.roles.agent import ImplementerSetup, ImplementerTask
-from kernelforge.workflows.forge_loop.iteration import fanout
-from kernelforge.workflows.forge_loop.memory.lessons import SummaryOutcome
-from kernelforge.utils.process_reaping import ReapReport
-from kernelforge.workflows.forge_loop.iteration.fanout import (
+from kernelforge.orchestrator.agent import ImplementerSetup, ImplementerTask
+from kernelforge.loop import fanout
+from kernelforge.tools.process_reaping import ReapReport
+from kernelforge.loop.fanout import (
     SERIALIZED_DRIVER_NAME,
     DeviceBenchmarkLock,
     LanePlan,
@@ -129,32 +128,6 @@ async def test_a_lane_of_a_worktree_workspace_gets_its_own_index(tmp_path):
     assert _git_output(workspace, "status", "--porcelain") == "?? build/\n"
     assert _git_output(workspace, "diff", "HEAD", "--", ".") == ""
     assert (workspace / "kernel.py").read_text() == "VALUE = 0\n"
-
-
-@pytest.mark.parametrize(
-    "record",
-    [SummaryOutcome(text="lane 1 widened the loads"), SummaryOutcome(reason="provider cannot resume the session")],
-)
-async def test_a_lane_carries_the_record_its_session_returned(tmp_path, record):
-    """The record, or why there is none, is taken before the round deletes the lane copy."""
-    workspace = _workspace(tmp_path)
-
-    async def session(_lane: LanePlan, lane_dir: Path, _driver: Path) -> SummaryOutcome:
-        (lane_dir / "kernel.py").write_text("VALUE = 1\n")
-        return record
-
-    results = await run_lanes(
-        workspace_dir=str(workspace),
-        lanes=[LanePlan("1", "widen the loads")],
-        session=session,
-        parent_dir=str(tmp_path),
-        driver=DRIVER_NAME,
-    )
-
-    entry = results[0].to_dict()
-    assert results[0].lesson == record
-    assert (entry["lesson"], entry["lesson_reason"]) == (record.text, record.reason)
-    assert LaneResult.from_dict(entry).lesson == record
 
 
 async def test_a_lane_of_a_detached_worktree_diffs_against_the_same_commit(tmp_path):
@@ -696,10 +669,9 @@ class _RecordingImplementer:
             }
         )
 
-        async def agent(kernel_path: str, plan: str, session_sink: dict | None = None) -> str:
+        async def agent(kernel_path: str, plan: str) -> str:
             return f"{kernel_path}:{plan}"
 
-        agent.close = lambda: None
         return agent
 
 

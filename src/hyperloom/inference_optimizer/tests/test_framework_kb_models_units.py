@@ -15,8 +15,7 @@ from hyperloom.agents.framework.models import Candidate
 
 
 # kb.py
-def test_read_pr_ledger_tolerates_malformed_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_FA_KB_PATH", str(tmp_path))
+def test_read_pr_ledger_tolerates_malformed_rows(tmp_path: Path) -> None:
     part = tmp_path / "framework_optimization"
     part.mkdir()
     (part / "lessons.jsonl").write_text(
@@ -28,30 +27,36 @@ def test_read_pr_ledger_tolerates_malformed_rows(tmp_path: Path, monkeypatch: py
         '{"b": 2}\n',
         encoding="utf-8",
     )
-    assert read_pr_ledger() == [{"a": 1}, {"b": 2}]
+    assert read_pr_ledger(kb_root=tmp_path) == [{"a": 1}, {"b": 2}]
     # Missing file -> empty (cold start).
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_FA_KB_PATH", str(tmp_path / "nope"))
-    assert read_pr_ledger() == []
+    assert read_pr_ledger(kb_root=tmp_path / "nope") == []
 
 
-@pytest.mark.parametrize("env_name", ["USER_DATA_PATH", "INFERENCE_OPTIMIZER_FA_KB_PATH"])
-async def test_lessons_writer_and_reader_resolve_the_same_file(
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({}, id="workspace-default"),
+        pytest.param({"USER_DATA_PATH": "/tmp/hl-user-data"}, id="user-data-path"),
+        pytest.param({"INFERENCE_OPTIMIZER_FA_KB_PATH": "/tmp/hl-explicit-kb"}, id="explicit-override"),
+    ],
+)
+def test_lessons_writer_and_reader_resolve_the_same_file(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    env_name: str,
+    env: dict[str, str],
 ) -> None:
     """The PR ledger must be one file, whatever the deployment sets."""
+    from hyperloom.agents.framework import kb as fa_kb
     from hyperloom.orchestrator.knowledge import kb_writeback
 
-    for name in ("USER_DATA_PATH", "INFERENCE_OPTIMIZER_FA_KB_PATH", "FRAMEWORK_AGENT_ROOT"):
+    for name in ("USER_DATA_PATH", "INFERENCE_OPTIMIZER_FA_KB_PATH", "FRAMEWORK_AGENT_KB_DIR", "FRAMEWORK_AGENT_ROOT"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(env_name, str(tmp_path))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
-    await kb_writeback.write_framework_record(
-        kb_writeback.FrameworkOutcome("PR-1", "sha", "p.patch", kb_writeback.OUTCOME_INTEGRATED, 1.0, "sess")
-    )
+    writer = kb_writeback._default_kb_root() / kb_writeback.LESSONS_FILE
+    reader = fa_kb.framework_optimization_root() / kb_writeback.LESSONS_FILE
 
-    assert [(row["pr_url"], row["outcome"]) for row in read_pr_ledger()] == [("PR-1", "integrated")]
+    assert writer == reader
 
 
 def test_framework_kb_does_not_share_a_root_with_the_recipe_kb(
@@ -64,6 +69,7 @@ def test_framework_kb_does_not_share_a_root_with_the_recipe_kb(
 
     for name in (
         "INFERENCE_OPTIMIZER_FA_KB_PATH",
+        "FRAMEWORK_AGENT_KB_DIR",
         "KNOWLEDGE_LOCAL_ROOT",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -79,7 +85,7 @@ def test_framework_kb_does_not_share_a_root_with_the_recipe_kb(
 
 # models.py
 def test_candidate_slug() -> None:
-    assert Candidate(ref="feature/Foo@1").slug == "feature-foo-1"
-    assert Candidate(ref="PR:123").slug == "pr-123"
-    assert Candidate(ref="release/v0.8.x").slug == "release-v0.8.x"
-    assert Candidate(ref="!!!").slug == "candidate"
+    assert Candidate(ref="feature/Foo@1", repo="r").slug == "feature-foo-1"
+    assert Candidate(ref="PR:123", repo="r").slug == "pr-123"
+    assert Candidate(ref="release/v0.8.x", repo="r").slug == "release-v0.8.x"
+    assert Candidate(ref="!!!", repo="r").slug == "candidate"

@@ -11,7 +11,6 @@ category is a mapping from the fields its declaration names to one expression
 each; a file field's expression evaluates to the path of a local file, relative
 to the source document. ``raw_logs`` is one optional expression for the list of
 local files that produced the Experience; an empty list records none.
-``code_fields`` names file fields collection screens with the token formats only.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from hyperloom_kb.collect.expressions import (
     compile_expression,
 )
 from hyperloom_kb.config import ConfigurationError, load_declaration
-from hyperloom_kb.schema import ExperienceDeclaration, FieldKind
+from hyperloom_kb.schema import ExperienceDeclaration
 
 MAPPING_FORMAT = "hyperloom-kb.collect.v2"
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -50,7 +49,6 @@ _TOP_LEVEL = frozenset(
         "let",
         "require",
         "experience",
-        "code_fields",
     }
 )
 _PRODUCER_FIELDS = {
@@ -116,8 +114,6 @@ class CollectMapping:
     require: tuple[Rule, ...]
     #: One expression per record field; a category field is keyed ``category.field``.
     experience: dict[str, Expression]
-    #: File fields screened with the token formats only, each ``category.field``.
-    code_fields: frozenset[str] = frozenset()
 
 
 def packaged_path(directory: str, name: str) -> Path | None:
@@ -304,6 +300,7 @@ def compile_mapping(
         lets.append((let_name, compile_expression(expression, frozenset(bound), location)))
         bound.add(let_name)
 
+    names = frozenset(bound)
     return CollectMapping(
         reference=reference,
         description=str(data.get("description") or "").strip(),
@@ -314,41 +311,9 @@ def compile_mapping(
         unit_id=unit_id,
         lookups=tuple(lookups),
         lets=tuple(lets),
-        require=_rules(data.get("require"), "require", "check", frozenset(bound)),
-        experience=_experience(data.get("experience"), frozenset(bound), declaration),
-        code_fields=_code_fields(data.get("code_fields"), declaration),
+        require=_rules(data.get("require"), "require", "check", names),
+        experience=_experience(data.get("experience"), names, declaration),
     )
-
-
-def _code_fields(value: Any, declaration: ExperienceDeclaration) -> frozenset[str]:
-    """The file fields ``value`` names, each ``category.field`` of a field the declaration declares."""
-
-    if value is None:
-        return frozenset()
-    if not isinstance(value, list):
-        raise MappingError("code_fields must be a list")
-    named: set[str] = set()
-    for index, item in enumerate(value):
-        path = _code_field(item, index, declaration)
-        if path in named:
-            raise MappingError(f"code_fields[{index}] repeats {path}")
-        named.add(path)
-    return frozenset(named)
-
-
-def _code_field(item: Any, index: int, declaration: ExperienceDeclaration) -> str:
-    """One ``code_fields`` entry: a declared file field, as ``category.field``."""
-
-    where = f"code_fields[{index}]"
-    category, separator, name = item.partition(".") if isinstance(item, str) else ("", "", "")
-    field = (
-        declaration.field(category, name) if separator and category in DECLARED_CATEGORIES and "." not in name else None
-    )
-    if field is None:
-        raise MappingError(f"{where} names no field of the declaration")
-    if field.kind is not FieldKind.FILE:
-        raise MappingError(f"{where} names a field that is not a file")
-    return item
 
 
 def load_mapping(reference: str | Path) -> CollectMapping:

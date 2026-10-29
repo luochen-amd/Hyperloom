@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from kernelforge.workflows.gemm_tune import utils
-from kernelforge.workflows.gemm_tune.tier3 import gate, ledger, sandbox
-from kernelforge.workflows.gemm_tune.tier3.coverage import CoverageGap
-from kernelforge.workflows.gemm_tune.tier3.referee import CaptureFailed
-from kernelforge.workflows.gemm_tune.tier3.runner import Retiming, Tier3Target, attempt_generated_tuner
+from kernelforge.gemm_tune import utils
+from kernelforge.gemm_tune.tier3 import gate, ledger, sandbox
+from kernelforge.gemm_tune.tier3.coverage import CoverageGap
+from kernelforge.gemm_tune.tier3.referee import CaptureFailed
+from kernelforge.gemm_tune.tier3.runner import Retiming, Tier3Target, attempt_generated_tuner
 
 
 def _gap(table="odd.csv", misses=100, kind="no_tuner", tuner=None):
@@ -314,9 +314,9 @@ class TestPlanPreviewsWhatRunDoes:
     """A preview that answers a different question than the thing it previews is worse than no preview: it is consulted precisely when someone is unsure, and it was showing TunableOp skipped for inputs under which the real run selects it."""
 
     def test_plan_accepts_an_explicit_demand_file(self):
-        from kernelforge.cli.gemm_tune_command import plan
+        from kernelforge.gemm_tune import cli
 
-        assert any("--demand" in (p.opts or []) for p in plan.params), (
+        assert any("--demand" in (p.opts or []) for p in cli.plan.params), (
             "run takes --demand; plan must too or they diverge again"
         )
 
@@ -327,7 +327,7 @@ class TestTheCliActuallyReachesTier3:
     def test_the_cli_has_a_call_site(self):
         import inspect
 
-        from kernelforge.workflows.gemm_tune import pipeline as cli
+        from kernelforge.gemm_tune import cli
 
         source = inspect.getsource(cli)
         assert "_attempt_tier3(" in source
@@ -339,15 +339,16 @@ class TestTheCliActuallyReachesTier3:
         # something.
         import inspect
 
-        from kernelforge.workflows.gemm_tune import pipeline as cli
+        from kernelforge.gemm_tune import cli
 
         # The selected tuners run in their own function; it is still the thing tier3 has to follow.
         assert "tuner_instance.execute()" in inspect.getsource(cli._execute_tuners)
-        source = inspect.getsource(cli.run_tuning)
+        # click wraps the command, so reach the function it decorated.
+        source = inspect.getsource(cli.run.callback)
         assert source.index("_execute_tuners(") < source.index("_attempt_tier3(")
 
     def test_a_table_with_no_adapter_is_refused_rather_than_approximated(self):
-        from kernelforge.workflows.gemm_tune.tier3.dispatch import adapters_for
+        from kernelforge.gemm_tune.tier3.dispatch import adapters_for
 
         assert adapters_for("a4w4_blockscale_tuned_gemm.csv") is None
         assert adapters_for("bf16_tuned_gemm.csv") is not None
@@ -356,9 +357,9 @@ class TestTheCliActuallyReachesTier3:
         # The generated result must reach reporting and deployment, not be dropped.
         import inspect
 
-        from kernelforge.workflows.gemm_tune import pipeline as cli
+        from kernelforge.gemm_tune import cli
 
-        source = inspect.getsource(cli.run_tuning)
+        source = inspect.getsource(cli.run.callback)
         assert "generated = _attempt_tier3(" in source
         assert "results.append(generated)" in source
 
@@ -367,10 +368,10 @@ class TestTheCliActuallyReachesTier3:
         # nothing, and that is the only condition tier3 exists for in practice.
         import inspect
 
-        from kernelforge.workflows.gemm_tune import pipeline as cli
+        from kernelforge.gemm_tune import cli
 
         assert "tuner_instance.execute()" in inspect.getsource(cli._execute_tuners)
-        source = inspect.getsource(cli.run_tuning)
+        source = inspect.getsource(cli.run.callback)
         recompute = source.index("_coverage_gaps(demand_report, tuner_specs, output_path, results)")
         assert source.index("_execute_tuners(") < recompute < source.index("_attempt_tier3(")
 
@@ -380,7 +381,7 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
 
     @staticmethod
     def _outcome(**kw):
-        from kernelforge.workflows.gemm_tune.tier3.runner import Tier3Outcome
+        from kernelforge.gemm_tune.tier3.runner import Tier3Outcome
 
         base = {"attempted": True, "stage": "referee", "ok": True, "table": "bf16_tuned_gemm.csv"}
         out = Tier3Outcome(**{**base, **kw})
@@ -390,7 +391,7 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
     @staticmethod
     def _judgement(speedup: float):
         """``improved`` is derived from the timing, so the timing is the input."""
-        from kernelforge.workflows.gemm_tune.tier3.referee import Judgement, PairedTiming
+        from kernelforge.gemm_tune.tier3.referee import Judgement, PairedTiming
 
         return Judgement(
             shape="16x1536x7168",
@@ -398,7 +399,7 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
         )
 
     def test_an_approved_outcome_maps_onto_a_tune_result(self):
-        from kernelforge.workflows.gemm_tune.pipeline import _tier3_result
+        from kernelforge.gemm_tune.cli import _tier3_result
 
         out = self._outcome(judgements=[self._judgement(1.5), self._judgement(0.9)])
         res = _tier3_result(out, _gap(table="bf16_tuned_gemm.csv"))
@@ -413,8 +414,8 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
 
     def test_a_shape_the_referee_could_not_time_is_in_no_micro_figure(self):
         """All three figures describe the shapes that were timed, so they cover the same set."""
-        from kernelforge.workflows.gemm_tune.pipeline import _tier3_result
-        from kernelforge.workflows.gemm_tune.tier3.referee import Judgement
+        from kernelforge.gemm_tune.cli import _tier3_result
+        from kernelforge.gemm_tune.tier3.referee import Judgement
 
         out = self._outcome(judgements=[self._judgement(1.5), Judgement(shape="8x1536x7168")])
         res = _tier3_result(out, _gap())
@@ -423,8 +424,8 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
         assert res.avg_micro_speedup == pytest.approx(1.5)
 
     def test_it_is_a_candidate_so_e2e_still_has_to_agree(self):
-        from kernelforge.workflows.gemm_tune.candidates import is_candidate, per_tuner_candidates
-        from kernelforge.workflows.gemm_tune.pipeline import _tier3_result
+        from kernelforge.gemm_tune.candidates import is_candidate, per_tuner_candidates
+        from kernelforge.gemm_tune.cli import _tier3_result
 
         res = _tier3_result(self._outcome(judgements=[self._judgement(1.5)]), _gap())
         assert res.candidate is True
@@ -432,19 +433,19 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
         assert [c.tuner for c in per_tuner_candidates([res])] == [res.tuner_name]
 
     def test_an_outcome_the_referee_did_not_approve_is_not_a_result(self):
-        from kernelforge.workflows.gemm_tune.pipeline import _tier3_result
+        from kernelforge.gemm_tune.cli import _tier3_result
 
         assert _tier3_result(self._outcome(ok=False), _gap()) is None
 
     def test_an_attempt_that_never_reached_a_csv_is_not_a_result(self):
-        from kernelforge.workflows.gemm_tune.pipeline import _tier3_result
+        from kernelforge.gemm_tune.cli import _tier3_result
 
         assert _tier3_result(self._outcome(output_csv=""), _gap()) is None
 
     def test_the_outcome_carries_its_own_artifact_path(self):
         # Rather than the caller rebuilding it from the work root by
         # convention, which would deploy the wrong file the day that changes.
-        from kernelforge.workflows.gemm_tune.tier3.runner import Tier3Outcome
+        from kernelforge.gemm_tune.tier3.runner import Tier3Outcome
 
         assert "output_csv" in Tier3Outcome().to_dict()
 
@@ -452,7 +453,7 @@ class TestAVerifiedGeneratedTunerBecomesAnOrdinaryResult:
 class TestShapesComeFromTheDemandDocument:
     def test_the_demand_lookup_matches_what_load_demand_returns(self, tmp_path):
         # Guard against treating the parsed demand dict as an object with ``tables``.
-        from kernelforge.workflows.gemm_tune import evidence, pipeline as cli
+        from kernelforge.gemm_tune import cli, evidence
 
         report = evidence.parse_log(
             "[aiter] shape is M:512, N:1536, K:7168, "
@@ -468,7 +469,7 @@ class TestShapesComeFromTheDemandDocument:
 
         # ``_attempt_tier3`` imports it inside the function, so the module
         # attribute is the patch point.
-        from kernelforge.workflows.gemm_tune import tier3
+        from kernelforge.gemm_tune import tier3
 
         original = tier3.attempt_generated_tuner
         tier3.attempt_generated_tuner = fake_attempt
@@ -484,29 +485,6 @@ class TestShapesComeFromTheDemandDocument:
 
         assert seen["shapes"], "the demand document has one key and it did not arrive"
         assert int(seen["shapes"][0]["N"]) == 1536
-
-
-def test_a_crashed_tier3_attempt_is_reported_as_a_failed_tuner(tmp_path, monkeypatch):
-    """A crash must reach the report as a failed tuner, not read as "Tier3 not attempted"."""
-    from kernelforge.workflows.gemm_tune import tier3, pipeline as cli
-    from kernelforge.workflows.gemm_tune.tuners.base import TuneResult
-
-    def crash(*_args, **_kwargs):
-        raise RuntimeError("generated tuner sandbox died")
-
-    monkeypatch.setattr(tier3, "attempt_generated_tuner", crash)
-
-    result = cli._attempt_tier3(
-        [_gap(table="a8w8_blockscale_tuned_gemm.csv")],
-        SimpleNamespace(profile=None, output_dir=tmp_path, demand_json="", gpu_type="MI355X", framework="sglang"),
-    )
-
-    assert result == TuneResult(
-        tuner_name="tier3_generated",
-        status="failed",
-        error="RuntimeError('generated tuner sandbox died')",
-        error_class="RuntimeError",
-    )
 
 
 class TestTheProviderCallMatchesTheProviderAPI:
@@ -544,7 +522,7 @@ class TestTheWholeChain:
         cj = tmp_path / "candidates.json"
 
         def _fake_generate(mandate, work_dir, **kw):
-            from kernelforge.workflows.gemm_tune.tier3.generate import GeneratedTuner
+            from kernelforge.gemm_tune.tier3.generate import GeneratedTuner
 
             script = work_dir / "tuner.py"
             script.write_text("# generated\n", encoding="utf-8")
@@ -576,15 +554,15 @@ class TestTheWholeChain:
         uncapturable_shapes=(),
     ):
         _, _, fake_gen = self._writes(tmp_path, rows, cands)
-        monkeypatch.setattr("kernelforge.workflows.gemm_tune.tier3.runner.generate_tuner", fake_gen)
+        monkeypatch.setattr("kernelforge.gemm_tune.tier3.runner.generate_tuner", fake_gen)
         monkeypatch.setattr(
-            "kernelforge.workflows.gemm_tune.tier3.runner.run_generated_tuner",
+            "kernelforge.gemm_tune.tier3.runner.run_generated_tuner",
             lambda script, wd, **kw: sandbox.SandboxResult(
                 True, 0, 1.0, produced=[str(p) for p in kw.get("expect", [])]
             ),
         )
         now = {"t": 0.0}
-        monkeypatch.setattr("kernelforge.workflows.gemm_tune.tier3.referee.time.perf_counter", lambda: now["t"])
+        monkeypatch.setattr("kernelforge.gemm_tune.tier3.referee.time.perf_counter", lambda: now["t"])
 
         def _call(cost):
             def _fn():
@@ -681,8 +659,8 @@ class TestTheWholeChain:
 
 def test_the_generator_degrades_when_no_agent_provider_is_installed(tmp_path, monkeypatch):
     """The standalone wheel must tune without the LLM stack present."""
-    from kernelforge.workflows.gemm_tune.tier3.generate import generate_tuner
-    from kernelforge.workflows.gemm_tune.tier3.mandate import build_mandate
+    from kernelforge.gemm_tune.tier3.generate import generate_tuner
+    from kernelforge.gemm_tune.tier3.mandate import build_mandate
 
     monkeypatch.setitem(sys.modules, "kernelforge.agent_backends.registry", None)
     m = build_mandate(_gap(), [{"M": 16, "N": 1536, "K": 7168}])

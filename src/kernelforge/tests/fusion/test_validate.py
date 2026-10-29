@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 
-from kernelforge.workflows.forge_fusion.models import Recipe
-from kernelforge.workflows.forge_fusion.validate import (
+from kernelforge.fusion.models import Recipe
+from kernelforge.fusion.validate import (
     BenchOutcome,
     CompileOutcome,
     HarnessKernelRunner,
@@ -17,6 +17,8 @@ from kernelforge.workflows.forge_fusion.validate import (
     classify_compile_error,
     eager_trace_alignment,
     launch_count,
+    max_abs_err,
+    snr_db,
     validate_recipe,
 )
 
@@ -54,6 +56,25 @@ class _FakeRunner:
 
     def microbench(self, recipe):
         return self._bench
+
+
+# ── metric helpers ──────────────────────────────────────────────────────────
+class TestMetrics:
+    def test_snr_bit_exact_is_inf(self):
+        assert snr_db([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == float("inf")
+
+    def test_snr_higher_for_closer_signals(self):
+        close = snr_db([1.0, 2.0, 3.0], [1.001, 2.001, 3.001])
+        far = snr_db([1.0, 2.0, 3.0], [1.5, 2.5, 3.5])
+        assert close > far > 0
+
+    def test_snr_none_on_length_mismatch(self):
+        assert snr_db([1.0, 2.0], [1.0]) is None
+        assert snr_db([], []) is None
+
+    def test_max_abs_err(self):
+        assert max_abs_err([1.0, 2.0], [1.0, 2.5]) == 0.5
+        assert max_abs_err([1.0], [1.0, 2.0]) is None
 
 
 # ── ROCm failure-mode classifiers ────────────────────────────────────────────
@@ -306,7 +327,7 @@ class TestEagerTraceAlignment:
 
 def test_the_span_marks_the_anchor_occurrence_not_every_matching_name():
     """One kernel can appear twice in a span; only one of them is the anchor."""
-    from kernelforge.workflows.forge_fusion.harness_contract import trace_kernels_block
+    from kernelforge.fusion.harness_contract import trace_kernels_block
 
     block = trace_kernels_block(
         {

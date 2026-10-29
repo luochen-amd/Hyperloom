@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from hyperloom.inference_optimizer.breakdown.recorder.assembler import event_parts
-from hyperloom.inference_optimizer.breakdown.recorder.sections import STACK_EVENT_SECTIONS
+from hyperloom.inference_optimizer.breakdown.recorder.assembler import stack_event_parts
 from hyperloom.inference_optimizer.breakdown.reporters._renderers.final import render as render_final
 from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.kernel.geak_config import (
@@ -54,6 +53,7 @@ def test_revalidation_validated_when_identity_and_engagement_hold() -> None:
             baseline=100.0,
             got_hash="abc",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
         )
         == "validated"
     )
@@ -67,6 +67,7 @@ def test_revalidation_fallback_on_config_identity_mismatch() -> None:
             baseline=100.0,
             got_hash="WRONG",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
         )
         == "fallback"
     )
@@ -80,6 +81,7 @@ def test_revalidation_fallback_when_not_engaged() -> None:
             baseline=100.0,
             got_hash="abc",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
         )
         == "fallback"
     )
@@ -93,6 +95,7 @@ def test_revalidation_identity_skipped_when_no_expected_hash() -> None:
             baseline=100.0,
             got_hash="",
             expected_hash="",
+            min_engaged_gain_pct=2.0,
         )
         == "validated"
     )
@@ -106,6 +109,7 @@ def test_revalidation_fallback_on_bad_measurement(measured, baseline) -> None:
             baseline=baseline,
             got_hash="abc",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
         )
         == "fallback"
     )
@@ -135,6 +139,7 @@ def test_revalidation_no_promote_when_not_beating_current_best() -> None:
             baseline=7380.7,
             got_hash="abc",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
             current_best=10067.9,
         )
         == "no_promote"
@@ -149,6 +154,7 @@ def test_revalidation_validated_when_beating_current_best() -> None:
             baseline=7380.7,
             got_hash="abc",
             expected_hash="abc",
+            min_engaged_gain_pct=2.0,
             current_best=10067.9,
         )
         == "validated"
@@ -930,7 +936,7 @@ def test_the_route_level_lift_is_claimed_once_from_the_anchor_it_beat(tmp_path: 
         coord.phase_kernel.promote_geak_from_candidate(result, measured_tput=3400.0, overlay_loaded=True)
         rows = [
             r
-            for r in event_parts(STACK_EVENT_SECTIONS).get("stack_adoption") or []
+            for r in stack_event_parts().get("stack_adoption") or []
             if isinstance(r, dict) and str(r.get("action") or "") == "geak_e2e"
         ]
 

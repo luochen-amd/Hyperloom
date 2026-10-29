@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from hyperloom.common.agentx_workload import is_agentx_client_script
-from hyperloom.common.coerce import first_text
 
 log = logging.getLogger(__name__)
 
@@ -34,28 +33,32 @@ def resolve_launch_server_script(bench: Mapping[str, Any]) -> str:
     env because the recipe is the record of what actually ran.
     """
     envs = bench.get("envs") if isinstance(bench.get("envs"), dict) else {}
-    script = Path(first_text(bench.get("benchmark_script"))).name
+    script = Path(str(bench.get("benchmark_script") or "").strip()).name
     if not script:
         return ""
 
     if is_agentx_client_script(script):
-        script = first_text(envs.get("AGENTX_SERVER_SCRIPT"), os.environ.get("AGENTX_SERVER_SCRIPT"))
+        script = str(envs.get("AGENTX_SERVER_SCRIPT") or os.environ.get("AGENTX_SERVER_SCRIPT") or "").strip()
         if not script:
-            framework = first_text(bench.get("framework"), envs.get("FRAMEWORK")).lower()
+            framework = str(bench.get("framework") or envs.get("FRAMEWORK") or "").strip().lower()
             if not framework:
                 return ""
-            gpu = first_text(
-                envs.get("GPU_TYPE"),
-                envs.get("RUNNER_TYPE"),
-                bench.get("runner_type"),
-                os.environ.get("GPU_TYPE"),
-                os.environ.get("RUNNER_TYPE"),
-                "mi300x",
-            ).lower()
+            gpu = (
+                str(
+                    envs.get("GPU_TYPE")
+                    or envs.get("RUNNER_TYPE")
+                    or bench.get("runner_type")
+                    or os.environ.get("GPU_TYPE")
+                    or os.environ.get("RUNNER_TYPE")
+                    or "mi300x"
+                )
+                .strip()
+                .lower()
+            )
             script = f"{framework}_{gpu}.sh"
 
     for root in (
-        first_text(bench.get("inferencex_path")),
+        str(bench.get("inferencex_path") or "").strip(),
         os.environ.get("INFERENCEX_PATH", "").strip(),
     ):
         if not root:

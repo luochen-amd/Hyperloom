@@ -22,7 +22,6 @@ from hyperloom.inference_optimizer.session.paths import make_session_dir
 from hyperloom.orchestrator.actions.executors import _kernel_agent_tool as kernel_agent_tool
 from hyperloom.orchestrator.kernel import controller_patch_integration as cpi
 from hyperloom.orchestrator.kernel import request_handlers as krh
-from hyperloom.orchestrator.kernel import _integrate_outcomes as integrate_outcomes
 from hyperloom.orchestrator.state.shared_state import SharedState
 
 KERNEL_REL = "python/sglang/kernels/ops/attention/decode_attention.py"
@@ -129,7 +128,7 @@ def through_apply(monkeypatch):
         calls.append((payload, result))
         return result
 
-    monkeypatch.setattr(integrate_outcomes, "_maybe_apply_kernel_patch", record)
+    monkeypatch.setattr(krh, "_maybe_apply_kernel_patch", record)
     return calls
 
 

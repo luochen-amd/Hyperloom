@@ -77,15 +77,19 @@ def test_is_valid_measurement():
 
 
 # ---- _resolve_leak_roots --------------------------------------------------
+def test_resolve_leak_roots_explicit(tmp_path):
+    assert br._resolve_leak_roots(tmp_path) == (tmp_path,)
+
+
 def test_resolve_leak_roots_env(monkeypatch):
     monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", "/a:/b")
-    roots = br._resolve_leak_roots()
+    roots = br._resolve_leak_roots(None)
     assert roots == (Path("/a"), Path("/b"))
 
 
 def test_resolve_leak_roots_default(monkeypatch):
     monkeypatch.delenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", raising=False)
-    assert br._resolve_leak_roots() == (br._DEFAULT_LEAK_ARTIFACT_ROOT,)
+    assert br._resolve_leak_roots(None) == (br._DEFAULT_LEAK_ARTIFACT_ROOT,)
 
 
 # ---- _materialize_rescue_into_workspace -----------------------------------
@@ -155,31 +159,29 @@ def test_rescue_candidate_paths_dedup_and_in_ws(tmp_path, monkeypatch):
 
 
 # ---- harvest_leaked_artifacts ---------------------------------------------
-def test_harvest_leaked_artifacts(tmp_path, monkeypatch):
+def test_harvest_leaked_artifacts(tmp_path):
     leak_root = tmp_path / "workspace"
     leak_root.mkdir()
     (leak_root / "server.log").write_text("log", encoding="utf-8")
     (leak_root / "gpu_metrics.csv").write_text("csv", encoding="utf-8")
     dest = tmp_path / "dest"
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(leak_root))
-    out = br.harvest_leaked_artifacts(dest)
+    out = br.harvest_leaked_artifacts(dest, leak_root=leak_root)
     copied = {c.name for _, c in out}
     assert "server.log" in copied
     assert "gpu_metrics.csv" in copied
     assert (dest / "server.log").exists()
 
 
-def test_harvest_skips_non_file(tmp_path, monkeypatch):
+def test_harvest_skips_non_file(tmp_path):
     leak_root = tmp_path / "workspace"
     leak_root.mkdir()
     (leak_root / "server.log").mkdir()
     dest = tmp_path / "dest"
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(leak_root))
-    out = br.harvest_leaked_artifacts(dest)
+    out = br.harvest_leaked_artifacts(dest, leak_root=leak_root)
     assert out == []
 
 
-def test_harvest_mtime_gate(tmp_path, monkeypatch):
+def test_harvest_mtime_gate(tmp_path):
     import os
 
     leak_root = tmp_path / "workspace"
@@ -189,8 +191,7 @@ def test_harvest_mtime_gate(tmp_path, monkeypatch):
     old = f.stat().st_mtime - 5000
     os.utime(f, (old, old))
     dest = tmp_path / "dest"
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(leak_root))
-    out = br.harvest_leaked_artifacts(dest, subprocess_started_unix=f.stat().st_mtime + 10000)
+    out = br.harvest_leaked_artifacts(dest, leak_root=leak_root, subprocess_started_unix=f.stat().st_mtime + 10000)
     assert out == []
 
 
@@ -200,18 +201,16 @@ def test_harvest_dest_mkdir_error(tmp_path, monkeypatch):
     assert out == []
 
 
-def test_harvest_missing_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(tmp_path / "nonexistent"))
-    out = br.harvest_leaked_artifacts(tmp_path / "dest")
+def test_harvest_missing_root(tmp_path):
+    out = br.harvest_leaked_artifacts(tmp_path / "dest", leak_root=tmp_path / "nonexistent")
     assert out == []
 
 
-def test_harvest_skips_already_under_dest(tmp_path, monkeypatch):
+def test_harvest_skips_already_under_dest(tmp_path):
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / "server.log").write_text("log", encoding="utf-8")
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(dest))
-    out = br.harvest_leaked_artifacts(dest)
+    out = br.harvest_leaked_artifacts(dest, leak_root=dest)
     assert out == []
 
 
@@ -220,8 +219,7 @@ def test_harvest_copy_error(tmp_path, monkeypatch):
     leak_root.mkdir()
     (leak_root / "server.log").write_text("log", encoding="utf-8")
     monkeypatch.setattr(br.shutil, "copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
-    monkeypatch.setenv("INFERENCE_OPTIMIZER_LEAK_ROOTS", str(leak_root))
-    out = br.harvest_leaked_artifacts(tmp_path / "dest")
+    out = br.harvest_leaked_artifacts(tmp_path / "dest", leak_root=leak_root)
     assert out == []
 
 

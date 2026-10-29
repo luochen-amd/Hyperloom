@@ -17,7 +17,6 @@ from hyperloom.orchestrator.roles import (
 )
 from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.inference_optimizer.cli import preflight as cli_preflight
-from hyperloom.inference_optimizer.cli import preflight_env as cli_preflight_env
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.orchestrator.state.shared_state import SharedState
 
@@ -39,7 +38,10 @@ async def test_fresh_session_is_not_resume(session_dir):
     c = Coordinator(session_dir, backends=_backends_full())
     try:
         info = c.writeback.resumed_from
-        assert info == {"is_resume": False, "rebuilt": False}
+        assert info["is_resume"] is False
+        assert info["event_count"] == 0
+        assert info["state_json_present"] is False
+        assert info["rebuilt"] is False
     finally:
         await c.stop()
 
@@ -50,6 +52,7 @@ async def test_existing_state_json_triggers_resume(session_dir):
     c = Coordinator(session_dir, backends=_backends_full())
     try:
         assert c.writeback.resumed_from["is_resume"] is True
+        assert c.writeback.resumed_from["state_json_present"] is True
     finally:
         await c.stop()
 
@@ -148,6 +151,7 @@ async def test_existing_events_triggers_resume(session_dir):
     c2 = Coordinator(session_dir, backends=_backends_full())
     try:
         assert c2.writeback.resumed_from["is_resume"] is True
+        assert c2.writeback.resumed_from["event_count"] >= 1
     finally:
         await c2.stop()
 
@@ -179,8 +183,9 @@ async def test_replay_rebuilds_undecided_proposals(session_dir):
 
     c2 = Coordinator(session_dir, backends=_backends_full())
     try:
-        await c2.writeback.replay_for_resume()
-        assert list(c2.state.pending_proposals) == [original_id]
+        stats = await c2.writeback.replay_for_resume()
+        assert stats["pending_restored"] == 1
+        assert original_id in c2.state.pending_proposals
         restored = c2.state.pending_proposals[original_id]
         assert restored.action_name == "baseline"
         assert restored.from_agent == "orchestration"
@@ -213,7 +218,8 @@ async def test_replay_skips_approved_proposals(session_dir):
 
     c2 = Coordinator(session_dir, backends=_backends_full())
     try:
-        await c2.writeback.replay_for_resume()
+        stats = await c2.writeback.replay_for_resume()
+        assert stats["pending_restored"] == 0
         assert c2.state.pending_proposals == {}
     finally:
         await c2.stop()
@@ -258,8 +264,9 @@ async def test_replay_skips_rejected_proposals(session_dir):
 
     c2 = Coordinator(session_dir, backends=_backends_full())
     try:
-        await c2.writeback.replay_for_resume()
-        assert c2.state.pending_proposals == {}
+        stats = await c2.writeback.replay_for_resume()
+        assert stats["pending_restored"] == 0
+        assert stats["verdicts_seen"] >= 1
     finally:
         await c2.stop()
 
@@ -324,8 +331,9 @@ async def test_replay_mixed_pending_and_decided(session_dir):
 
     c2 = Coordinator(session_dir, backends=_backends_full())
     try:
-        await c2.writeback.replay_for_resume()
-        [restored] = c2.state.pending_proposals.values()
+        stats = await c2.writeback.replay_for_resume()
+        assert stats["pending_restored"] == 1
+        restored = next(iter(c2.state.pending_proposals.values()))
         assert restored.action_name == "explore"
     finally:
         await c2.stop()
@@ -473,7 +481,7 @@ class TestN24KernelAgentEnvHardFail:
 
     def test_aborts_when_no_user_data_path(self, monkeypatch, capsys):
         with pytest.raises(SystemExit) as excinfo:
-            cli_preflight_env._load_kernel_agent_env_fallback()
+            cli_preflight._load_kernel_agent_env_fallback()
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "USER_DATA_PATH" in err
@@ -482,7 +490,7 @@ class TestN24KernelAgentEnvHardFail:
     def test_aborts_when_env_file_missing(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         with pytest.raises(SystemExit) as excinfo:
-            cli_preflight_env._load_kernel_agent_env_fallback()
+            cli_preflight._load_kernel_agent_env_fallback()
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "kernel-agent.env.sh" in err
@@ -506,7 +514,7 @@ class TestN24KernelAgentEnvHardFail:
         (runtime / "kernel-agent.env.sh").write_text(contents, encoding="utf-8")
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         with pytest.raises(SystemExit) as excinfo:
-            cli_preflight_env._load_kernel_agent_env_fallback()
+            cli_preflight._load_kernel_agent_env_fallback()
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "malformed or stale" in err
@@ -520,7 +528,7 @@ class TestN24KernelAgentEnvHardFail:
             encoding="utf-8",
         )
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
-        cli_preflight_env._load_kernel_agent_env_fallback()
+        cli_preflight._load_kernel_agent_env_fallback()
         import os as _os
 
         assert _os.environ["KERNEL_AGENT_LOG_LEVEL"] == "INFO"
@@ -537,7 +545,7 @@ class TestN24KernelAgentEnvHardFail:
         )
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         monkeypatch.setenv("KERNEL_AGENT_LOG_LEVEL", "DEBUG")
-        cli_preflight_env._load_kernel_agent_env_fallback()
+        cli_preflight._load_kernel_agent_env_fallback()
         import os as _os
 
         assert _os.environ["KERNEL_AGENT_LOG_LEVEL"] == "DEBUG"
@@ -565,7 +573,7 @@ class TestN24KernelAgentEnvHardFail:
         import os as _os
 
         try:
-            cli_preflight_env._load_kernel_agent_env_fallback()
+            cli_preflight._load_kernel_agent_env_fallback()
             loaded_key = _os.environ.get("ANTHROPIC_API_KEY")
         finally:
             # The loader writes straight into os.environ, which monkeypatch cannot roll back; a leaked credential
@@ -587,7 +595,7 @@ class TestN24KernelAgentEnvHardFail:
         )
         monkeypatch.setenv("KERNEL_AGENT_ENV", str(custom))
         monkeypatch.setenv("USER_DATA_PATH", "/nonexistent/should-not-be-used")
-        outcome = cli_preflight_env._load_kernel_agent_env_fallback()
+        outcome = cli_preflight._load_kernel_agent_env_fallback()
 
         assert outcome["detail"]["env_file"] == str(custom)
 
@@ -629,7 +637,7 @@ class TestTracelensRootEnvCorrection:
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         monkeypatch.setenv("TRACELENS_ROOT", str(tmp_path / "ghost" / "TraceLens"))
 
-        outcome = cli_preflight_env._load_kernel_agent_env_fallback()
+        outcome = cli_preflight._load_kernel_agent_env_fallback()
 
         import os as _os
 
@@ -647,7 +655,7 @@ class TestTracelensRootEnvCorrection:
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         monkeypatch.setenv("TRACELENS_ROOT", str(inherited))
 
-        outcome = cli_preflight_env._load_kernel_agent_env_fallback()
+        outcome = cli_preflight._load_kernel_agent_env_fallback()
 
         import os as _os
 
@@ -673,7 +681,7 @@ class TestTracelensRootEnvCorrection:
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         monkeypatch.setenv("MAGPIE_PATH", selected)
 
-        outcome = cli_preflight_env._load_kernel_agent_env_fallback()
+        outcome = cli_preflight._load_kernel_agent_env_fallback()
 
         import os as _os
 
@@ -698,8 +706,8 @@ class TestTracelensRootEnvCorrection:
         monkeypatch.setenv("USER_DATA_PATH", str(tmp_path))
         monkeypatch.setenv("PYTHONPATH", "")
 
-        outcome = cli_preflight_env._load_kernel_agent_env_fallback()
-        cli_preflight_env._derive_runtime_paths()
+        outcome = cli_preflight._load_kernel_agent_env_fallback()
+        cli_preflight._derive_runtime_paths()
 
         assert os.environ["MAGPIE_PATH"] == str(magpie_dir)
         assert "MAGPIE_PATH" not in outcome["detail"]["corrected_keys"]
@@ -714,9 +722,9 @@ class TestTracelensRootEnvCorrection:
         assert child.stdout.strip() == "installer-checkout"
 
     def test_placeholder_path_to_your_is_unset(self):
-        assert cli_preflight_env._is_placeholder_tracelens_path("/path/to/your/TraceLens") is True
-        assert cli_preflight_env._is_placeholder_tracelens_path("<your-tracelens>") is True
-        assert cli_preflight_env._is_placeholder_tracelens_path("/tmp/hyperloom/TraceLens") is False
+        assert cli_preflight._is_placeholder_tracelens_path("/path/to/your/TraceLens") is True
+        assert cli_preflight._is_placeholder_tracelens_path("<your-tracelens>") is True
+        assert cli_preflight._is_placeholder_tracelens_path("/tmp/hyperloom/TraceLens") is False
 
     def test_check_root_exits_when_set_but_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRACELENS_ROOT", str(tmp_path / "ghost"))

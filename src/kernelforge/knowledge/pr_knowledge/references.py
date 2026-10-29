@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from kernelforge.utils.durable_io import atomic_write_text
+from kernelforge.tools.durable_io import atomic_write_text
 from kernelforge.knowledge.pr_knowledge.client import (
     PRContractError,
     PRMonitorClient,
@@ -24,7 +24,6 @@ from kernelforge.knowledge.pr_knowledge.search import (
     HIT_SEARCH,
     PRLifecycle,
     PRReference,
-    _explicit_or_env,
     components_of_interest,
     discover,
     filter_references_by_relevance,
@@ -100,11 +99,6 @@ def _state_label(lifecycle: PRLifecycle) -> str:
     return f"{label}, draft" if lifecycle.draft else label
 
 
-def _sanitized_list(items: tuple[str, ...]) -> str:
-    """The first ``LIST_ITEMS`` entries, sanitized, with the empty ones left out."""
-    return ", ".join(item for item in (sanitize(raw) for raw in items[:LIST_ITEMS]) if item)
-
-
 def render_entry(reference: PRReference) -> str:
     """Render every populated field within one shared byte budget."""
     worth = "unknown" if reference.worth_trying is None else f"{reference.worth_trying:.2f}"
@@ -113,15 +107,25 @@ def render_entry(reference: PRReference) -> str:
         f"- {reference.repo}#{reference.number} ({state}, worth {worth}, "
         f"via {'+'.join(reference.hit_via) or 'unknown'}, {reference.n_files} files)"
     )
-    rendered = (
-        ("title", sanitize(reference.title)),
-        ("summary", sanitize(reference.summary)),
-        ("components", _sanitized_list(reference.components)),
-        ("mechanisms", _sanitized_list(reference.mechanisms)),
-        ("expected gain", sanitize(reference.expected_gain)),
-        ("risk", sanitize(reference.risk_notes)),
-    )
-    fields = [(name, value) for name, value in rendered if value]
+    fields: list[tuple[str, str]] = []
+    title = sanitize(reference.title)
+    if title:
+        fields.append(("title", title))
+    summary = sanitize(reference.summary)
+    if summary:
+        fields.append(("summary", summary))
+    components = [sanitize(item) for item in reference.components[:LIST_ITEMS]]
+    if any(components):
+        fields.append(("components", ", ".join(item for item in components if item)))
+    mechanisms = [sanitize(item) for item in reference.mechanisms[:LIST_ITEMS]]
+    if any(mechanisms):
+        fields.append(("mechanisms", ", ".join(item for item in mechanisms if item)))
+    gain = sanitize(reference.expected_gain)
+    if gain:
+        fields.append(("expected gain", gain))
+    risk = sanitize(reference.risk_notes)
+    if risk:
+        fields.append(("risk", risk))
     if reference.distill_absent:
         fields.append(("note", "not distilled yet; relevance unverified"))
 
@@ -471,7 +475,8 @@ def collect_references(
     """Resolve, discover, persist, and render upstream PR references."""
     # One absolute cutoff for every stage below: preflight, repository listing, snapshot loading, path probing,
     # discovery, and enrichment spend the same seconds.
-    deadline = time.monotonic() + _explicit_or_env(budget_sec, "PR_KB_BUDGET_SEC", 30, float)
+    budget = budget_sec or float(os.environ.get("PR_KB_BUDGET_SEC", "30") or 30)
+    deadline = time.monotonic() + budget
     client = client or PRMonitorClient()
     # Load after starting the clock so a slow filesystem cannot silently extend the lookup beyond the caller's
     # finalization reserve.

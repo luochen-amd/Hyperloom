@@ -8,8 +8,7 @@ import subprocess
 
 import pytest
 
-from kernelforge.utils import aiter_cache
-from kernelforge.config.edit_policy import FORGE_PROTECTED_PATHS
+from kernelforge.tools import aiter_cache
 
 
 @pytest.fixture(autouse=True)
@@ -325,7 +324,6 @@ def test_profiler_droppings_do_not_fail_a_session(tmp_path):
             cwd=str(ws),
             target_files=[str(ws / "src" / "k.py")],
             ignored_untracked_globs=list(globs),
-            protected_path_rules=FORGE_PROTECTED_PATHS,
         )
         guard = WorkspaceGuard(spec, dirty_baseline_default=True)
         guard.prepare()
@@ -350,7 +348,7 @@ def test_aiter_cache_droppings_do_not_fail_a_session(tmp_path):
         WorkspaceGuard,
         WorkspaceSafetyError,
     )
-    from kernelforge.workflows.forge_loop.roles.agent import TOOL_OWNED_UNTRACKED_GLOBS
+    from kernelforge.orchestrator.agent import TOOL_OWNED_UNTRACKED_GLOBS
 
     ws = tmp_path / "ws"
     (ws / "csrc").mkdir(parents=True)
@@ -374,7 +372,6 @@ def test_aiter_cache_droppings_do_not_fail_a_session(tmp_path):
             cwd=str(ws),
             target_files=[str(ws / "csrc" / "k.cu")],
             ignored_untracked_globs=list(globs),
-            protected_path_rules=FORGE_PROTECTED_PATHS,
         )
         guard = WorkspaceGuard(spec, dirty_baseline_default=True)
         guard.prepare()
@@ -399,7 +396,7 @@ def test_tool_owned_globs_still_refuse_an_undeclared_stray(tmp_path):
         WorkspaceGuard,
         WorkspaceSafetyError,
     )
-    from kernelforge.workflows.forge_loop.roles.agent import TOOL_OWNED_UNTRACKED_GLOBS
+    from kernelforge.orchestrator.agent import TOOL_OWNED_UNTRACKED_GLOBS
 
     ws = tmp_path / "ws"
     (ws / "csrc").mkdir(parents=True)
@@ -419,7 +416,6 @@ def test_tool_owned_globs_still_refuse_an_undeclared_stray(tmp_path):
         cwd=str(ws),
         target_files=[str(ws / "csrc" / "k.cu")],
         ignored_untracked_globs=list(TOOL_OWNED_UNTRACKED_GLOBS),
-        protected_path_rules=FORGE_PROTECTED_PATHS,
     )
     guard = WorkspaceGuard(spec, dirty_baseline_default=True)
     guard.prepare()
@@ -461,7 +457,6 @@ def test_profiler_droppings_are_forgiven_below_the_git_toplevel(tmp_path):
             "*/.rocprofv3/*",
             "*_results.db",
         ],
-        protected_path_rules=FORGE_PROTECTED_PATHS,
     )
     guard = WorkspaceGuard(spec, dirty_baseline_default=True)
     guard.prepare()
@@ -503,7 +498,6 @@ def test_an_undeclared_stray_file_is_still_refused(tmp_path):
         cwd=str(ws),
         target_files=[str(ws / "src" / "k.py")],
         ignored_untracked_globs=[".rocprofv3/*"],
-        protected_path_rules=FORGE_PROTECTED_PATHS,
     )
     guard = WorkspaceGuard(spec, dirty_baseline_default=True)
     guard.prepare()

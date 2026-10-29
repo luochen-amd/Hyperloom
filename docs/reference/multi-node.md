@@ -35,22 +35,6 @@ round.
 
 Without a hand-off, a `--nodes >= 2` run exits immediately with code 2.
 
-If the platform wrote a TopologyHandoff v1 file, it sets `TOPOLOGY_HANDOFF_FILE` to
-its path and Hyperloom reads that file instead of the variables below: `backend`,
-`nodes`, `gpus_per_node`, `service_url`, plus the `ray` block (`head_ip`,
-`dashboard_token_file`) for rayjob or the `infera` block (`ssh_key_file`,
-`ssh_port_base`, `known_hosts_file`, `prefill_ips`, `decode_ips`, `worker_ips`)
-for infera. A file that cannot be used (unreadable, not JSON, unsupported schema
-major, missing or malformed field) stops the run with an error naming the file;
-there is no silent fallback to the variables. If both are present the file wins
-and a warning names the fields that differ. The launch flags win over the file:
-`--mn-backend` over its `backend`, `--gpus-per-node` over its `gpus_per_node`, and
-`--nodes` over its `nodes`. Without `--mn-backend` the file's `backend` is the
-launch backend, and without `--gpus-per-node` its `gpus_per_node` is used (else 8);
-`--nodes` defaults to 1, so the file's `nodes` never turns a single-node launch
-into a multi-node one. With `TOPOLOGY_HANDOFF_FILE` unset,
-the variables below apply unchanged.
-
 The following table lists all hand-off variables.
 
 | Variable | Backend | Required | Meaning |
@@ -99,17 +83,16 @@ RDMA, where `:22` collides with the node's own sshd.
 ### rayjob
 
 The image must have Ray installed and on `PATH` at the version the KubeRay
-cluster expects. KubeRay runs `ray start` in the head and worker containers:
+cluster expects. KubeRay runs `ray start` in the head and worker containers. Pin
+Ray's CLI dependency explicitly:
 
 ```bash
-python -m pip install "ray[default]==2.44.1"
+python -m pip install "ray[default]==2.44.1" "click==8.1.8"
 ```
 
-Pin no `click` version. What the image owes is a Ray whose `ray start` parses
-the argv Hyperloom passes; preflight and the kernel-tools installer certify
-exactly that, by handing a representative argv to Ray's own parser. A `click`
-release that leaves the CLI parsing is no reason to downgrade it; one that
-breaks it calls for a Ray release built against it, through `RAY_VERSION`.
+Keep `click` below 8.2 regardless of what Ray's declared dependency allows — Ray
+2.44.1 accepts `click>=7.0`, but click 8.2 changed `Sentinel` and breaks Ray's
+CLI on import, preventing `ray start` from running.
 
 The cluster idles through the RayJob submitter: the platform sets its entrypoint
 to `tail -f /dev/null` so the cluster stays up between rounds.
@@ -246,18 +229,15 @@ tokens on some configurations.
 ### Ray `--num-gpus` rejected (rayjob)
 
 **Symptom**: `ray start --head --num-gpus=N` fails with `Error: no such option:
---num-gpus`, or preflight reports `ray start does not accept ...`.
+--num-gpus` or Click-related import errors.
 
-**Cause**: The image's Ray CLI does not parse the argv Hyperloom passes — an
-option it dropped, a value it narrowed, or a `click` release that breaks the
-CLI on import.
+**Cause**: Click ≥ 8.2 is incompatible with Ray 2.44. The rayjob image was built
+with a newer Click version.
 
-**Fix**: reinstall Ray at the version Hyperloom pins; where the image's `click`
-is newer than that CLI accepts, set `RAY_VERSION` to a Ray release built
-against it rather than downgrading `click`.
+**Fix**:
 
 ```bash
-pip install --quiet 'ray[default]==2.44.1'
+pip install --quiet 'click<8.3.0' 'ray[default]==2.44.1'
 ray --version
 ```
 

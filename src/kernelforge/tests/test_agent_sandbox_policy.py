@@ -13,8 +13,10 @@ from kernelforge.agent_backends.base import (
     AgentRuntimeConfig,
     with_writable_sandbox,
 )
-from kernelforge.workflows.forge_loop.preparation import task_preparer
-from kernelforge.workflows.flydsl_rewrite import flydsl_rewrite_driver_preparation as driver_preparation
+from kernelforge.loop import task_preparer
+from kernelforge.rewrite_by_flydsl import (
+    flydsl_rewrite_driver_preparation as driver_preparation,
+)
 
 
 def _runtime(sandbox_mode: str) -> AgentRuntimeConfig:
@@ -97,8 +99,7 @@ def test_prepare_agent_never_downgrades_the_configured_sandbox(
 ) -> None:
     """Run the prep turn under the configured policy, raised only if read-only."""
     seen = _capture_runtime(monkeypatch, task_preparer)
-    monkeypatch.setattr(task_preparer, "agent_runtime", lambda _config: _runtime(configured))
-    config = SimpleNamespace()
+    config = SimpleNamespace(agent_runtime=lambda: _runtime(configured))
 
     asyncio.run(
         task_preparer._run_prepare_agent(
@@ -130,8 +131,10 @@ def test_flydsl_driver_preparation_never_downgrades_the_configured_sandbox(
 ) -> None:
     """Apply the same policy to the FlyDSL rewrite driver authoring turn."""
     seen = _capture_runtime(monkeypatch, driver_preparation)
-    monkeypatch.setattr(driver_preparation, "agent_runtime", lambda _config: _runtime(configured))
-    config = SimpleNamespace(max_turns=10)
+    config = SimpleNamespace(
+        agent_runtime=lambda: _runtime(configured),
+        max_turns=10,
+    )
 
     asyncio.run(
         driver_preparation._run_agent(

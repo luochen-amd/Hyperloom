@@ -10,9 +10,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from hyperloom.orchestrator.state.kernel_decision_settings import _DEFAULT_ATTEMPTS_HISTORY
 from hyperloom.orchestrator.state.shared_state import (
-    ActionAttempt,
+    _DEFAULT_ATTEMPTS_HISTORY,
     _DEFAULT_LAST_FAILURES,
     SharedState,
     inject_stack_base_params,
@@ -125,22 +124,22 @@ class TestGridSessionDeadline:
         assert s.grid_session_deadline_sec() is None
 
     def test_future_deadline_when_ample_budget(self, monkeypatch):
-        import hyperloom.orchestrator.state._shared_state.budget as budget_mod
+        import hyperloom.orchestrator.state.shared_state as ss_mod
 
         s = SharedState()
         s.max_minutes = 60.0
         monkeypatch.setattr(type(s), "remaining_minutes", lambda self, **_: 10.0)
-        monkeypatch.setattr(budget_mod.time, "monotonic", lambda: 1000.0)
+        monkeypatch.setattr(ss_mod.time, "monotonic", lambda: 1000.0)
         # 10 min remaining, 72s closing reserve -> now + (600 - 72).
         assert s.grid_session_deadline_sec() == pytest.approx(1000.0 + 528.0)
 
     def test_deadline_is_now_when_under_reserve(self, monkeypatch):
-        import hyperloom.orchestrator.state._shared_state.budget as budget_mod
+        import hyperloom.orchestrator.state.shared_state as ss_mod
 
         s = SharedState()
         s.max_minutes = 60.0
         monkeypatch.setattr(type(s), "remaining_minutes", lambda self, **_: 1.0)
-        monkeypatch.setattr(budget_mod.time, "monotonic", lambda: 500.0)
+        monkeypatch.setattr(ss_mod.time, "monotonic", lambda: 500.0)
         # 60s remaining < 72s closing reserve -> deadline == now (already exhausted).
         assert s.grid_session_deadline_sec() == pytest.approx(500.0)
 
@@ -215,6 +214,25 @@ class TestSessionBudget:
         state = SharedState(session_id="s")
         assert state.extend_budget_minutes(30.0) == 0.0
         assert state.remaining_minutes() is None
+
+    def test_teardown_timings_accumulate_and_keep_a_total(self):
+        state = SharedState(session_id="s")
+        state.record_teardown_timing("final_json", 1.25)
+        state.record_teardown_timing("langfuse", 0.5)
+        assert state.teardown_timings_sec["final_json"] == 1.25
+        assert state.teardown_timings_sec["langfuse"] == 0.5
+        assert state.teardown_timings_sec["total"] == pytest.approx(1.75)
+
+    def test_timed_teardown_step_records_the_elapsed_wall(self, monkeypatch):
+        from hyperloom.orchestrator.state import shared_state as ss_mod
+        from hyperloom.orchestrator.state.shared_state import timed_teardown_step
+
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ss_mod.time, "monotonic", lambda: clock["t"])
+        state = SharedState(session_id="s")
+        with timed_teardown_step(state, "final_md"):
+            clock["t"] = 2.5
+        assert state.teardown_timings_sec["final_md"] == 2.5
 
 
 class TestProfileWorkloadContext:
@@ -314,40 +332,40 @@ class TestPolicyDenialAndPruned:
 
     def test_record_policy_denial_tracks_streak(self):
         s = SharedState()
-        s.tick = 1
         first = s.record_policy_denial(
             action_name="kernel_opt",
             rule="cooldown",
             hint="hint",
             intent_type="propose_action",
+            tick=1,
         )
-        s.tick = 2
         second = s.record_policy_denial(
             action_name="kernel_opt",
             rule="cooldown",
             hint="hint",
             intent_type="propose_action",
+            tick=2,
         )
         assert first == 1 and second == 2
         # Resetting drops the matching streak rows.
         s.reset_policy_denial_streak("kernel_opt")
-        s.tick = 3
         again = s.record_policy_denial(
             action_name="kernel_opt",
             rule="cooldown",
             hint="hint",
             intent_type="propose_action",
+            tick=3,
         )
         assert again == 1
 
     def test_record_policy_denial_keeps_intent_keys_when_present(self):
         s = SharedState()
-        s.tick = 1
         s.record_policy_denial(
             action_name="profile",
             rule="missing-prereq",
             hint="needs baseline",
             intent_type="propose_action",
+            tick=1,
             intent_payload={"action": "profile", "params": {}},
         )
         assert s.policy_denial_history[-1]["intent_payload_keys"] == ["action", "params"]
@@ -361,12 +379,12 @@ class TestPolicyDenialAndPruned:
     def test_policy_denial_history_caps_to_50(self):
         s = SharedState()
         for tick in range(60):
-            s.tick = tick
             s.record_policy_denial(
                 action_name="x",
                 rule="r",
                 hint="h",
                 intent_type="propose_action",
+                tick=tick,
             )
         assert len(s.policy_denial_history) == 50
 
@@ -376,12 +394,12 @@ class TestPolicyDenialAndPruned:
     def test_policy_denial_summary_includes_recent_rows(self):
         s = SharedState()
         for tick in range(4):
-            s.tick = tick
             s.record_policy_denial(
                 action_name=f"a{tick}",
                 rule="rule",
                 hint=f"hint-{tick}",
                 intent_type="propose_action",
+                tick=tick,
             )
         summary = s.to_policy_denial_summary(top_k=2)
         assert "a2" in summary
@@ -390,7 +408,7 @@ class TestPolicyDenialAndPruned:
 
 class TestKernelPatchIdentity:
     def test_resolves_explicit_payload(self):
-        from hyperloom.orchestrator.kernel.kernel_decisions import _resolve_kernel_patch_identity
+        from hyperloom.orchestrator.kernel._kernel_decisions import _resolve_kernel_patch_identity
 
         kid, patch, target, args = _resolve_kernel_patch_identity(
             {
@@ -408,13 +426,11 @@ class TestKernelPatchIdentity:
         )
 
     def test_a_payload_without_a_patch_path_has_no_patch_identity(self):
-        from hyperloom.orchestrator.kernel.kernel_decisions import kernel_patch_key
+        from hyperloom.orchestrator.kernel._kernel_decisions import kernel_patch_key
 
         assert kernel_patch_key({"kernel_id": "k1"}) == ""
 
     def test_find_rejected_kernel_patch_lookup(self):
-        from hyperloom.orchestrator.kernel.kernel_decisions import find_rejected_kernel_patch
-
         s = SharedState()
         s.rejected_kernel_patches.append(
             {
@@ -422,20 +438,17 @@ class TestKernelPatchIdentity:
                 "reason": "no_e2e_gain",
             }
         )
-        hit = find_rejected_kernel_patch(
-            s,
+        hit = s.find_rejected_kernel_patch(
             {
                 "kernel_id": "k1",
                 "patch_path": "/srv/k1.py",
                 "extra_server_args": "--a 1",
-            },
+            }
         )
         assert hit and hit["reason"] == "no_e2e_gain"
 
     def test_find_rejected_kernel_patch_missing_returns_none(self):
-        from hyperloom.orchestrator.kernel.kernel_decisions import find_rejected_kernel_patch
-
-        assert find_rejected_kernel_patch(SharedState(), {"kernel_id": "x"}) is None
+        assert SharedState().find_rejected_kernel_patch({"kernel_id": "x"}) is None
 
 
 class TestPersistence:
@@ -478,13 +491,11 @@ def test_record_action_attempt_succeeded_populates_last_and_history(
     s = SharedState()
     entry = s.record_action_attempt(
         action=action,
-        attempt=ActionAttempt(
-            task_id="t-1",
-            status="succeeded",
-            decision="promoted",
-            result={metric_key: 1234.5, "workspace": "/runs/" + action},
-            extras={"variant_name": "vA"},
-        ),
+        task_id="t-1",
+        status="succeeded",
+        decision="promoted",
+        result={metric_key: 1234.5, "workspace": "/runs/" + action},
+        extras={"variant_name": "vA"},
     )
     assert entry is not None
     last = getattr(s, f"last_{action}")
@@ -504,17 +515,15 @@ def test_record_action_attempt_failed_truncates_error_excerpt():
     long_err = "boom! " * 400
     s.record_action_attempt(
         action="baseline",
-        attempt=ActionAttempt(
-            task_id="t-2",
-            status="failed",
-            decision="no_promote",
-            result={
-                "error_class": "no_report",
-                "error": long_err,
-                "workspace": "/ws/baseline-2",
-                "reported_success": False,
-            },
-        ),
+        task_id="t-2",
+        status="failed",
+        decision="no_promote",
+        result={
+            "error_class": "no_report",
+            "error": long_err,
+            "workspace": "/ws/baseline-2",
+            "reported_success": False,
+        },
     )
     last = s.last_baseline
     assert last["status"] == "failed"
@@ -538,17 +547,15 @@ def test_record_action_attempt_subprocess_failure_captures_stderr_tail():
     big_err = "x" * 2000 + "torch.OutOfMemoryError: HIP out of memory"
     s.record_action_attempt(
         action="baseline",
-        attempt=ActionAttempt(
-            task_id="t-oom",
-            status="failed",
-            decision="no_promote",
-            result={
-                "error_class": "subprocess_nonzero",
-                "error": big_err,
-                "reported_success": False,
-                "stderr_log_path": "/runs/baseline/t-oom/baseline_stderr.log",
-            },
-        ),
+        task_id="t-oom",
+        status="failed",
+        decision="no_promote",
+        result={
+            "error_class": "subprocess_nonzero",
+            "error": big_err,
+            "reported_success": False,
+            "stderr_log_path": "/runs/baseline/t-oom/baseline_stderr.log",
+        },
     )
     attempt = s.baseline_attempts[-1]
     assert attempt["error_class"] == "subprocess_nonzero"
@@ -564,15 +571,13 @@ def test_record_action_attempt_redacts_secrets_from_persisted_errors():
     planted = "ak-sensitive-value"
     s.record_action_attempt(
         action="baseline",
-        attempt=ActionAttempt(
-            task_id="t-secret",
-            status="failed",
-            decision="no_promote",
-            result={
-                "error_class": "subprocess_nonzero",
-                "error": f"OPENAI_API_KEY={planted} Authorization: Bearer {planted}",
-            },
-        ),
+        task_id="t-secret",
+        status="failed",
+        decision="no_promote",
+        result={
+            "error_class": "subprocess_nonzero",
+            "error": f"OPENAI_API_KEY={planted} Authorization: Bearer {planted}",
+        },
     )
 
     attempt = s.baseline_attempts[-1]
@@ -587,9 +592,10 @@ def test_attempts_history_caps_at_default():
     for i in range(_DEFAULT_ATTEMPTS_HISTORY + 5):
         s.record_action_attempt(
             action="explore",
-            attempt=ActionAttempt(
-                task_id=f"t-{i}", status="succeeded", decision="discarded", result={"best_gain_pct": float(i)}
-            ),
+            task_id=f"t-{i}",
+            status="succeeded",
+            decision="discarded",
+            result={"best_gain_pct": float(i)},
         )
     history = s.explore_attempts
     assert len(history) == _DEFAULT_ATTEMPTS_HISTORY
@@ -601,9 +607,10 @@ def test_record_action_attempt_skips_non_audit_kinds():
     s = SharedState()
     out = s.record_action_attempt(
         action="kernel_opt",
-        attempt=ActionAttempt(
-            task_id="t-99", status="succeeded", decision="promoted", result={"output_throughput": 1.0}
-        ),
+        task_id="t-99",
+        status="succeeded",
+        decision="promoted",
+        result={"output_throughput": 1.0},
     )
     assert out is None
     assert not hasattr(s, "kernel_opt_attempts_list")
@@ -613,21 +620,17 @@ def test_to_prompt_summary_renders_attempt_lines():
     s = SharedState()
     s.record_action_attempt(
         action="baseline",
-        attempt=ActionAttempt(
-            task_id="t-1",
-            status="succeeded",
-            decision="promoted",
-            result={"output_throughput": 1761.6, "workspace": "/ws"},
-        ),
+        task_id="t-1",
+        status="succeeded",
+        decision="promoted",
+        result={"output_throughput": 1761.6, "workspace": "/ws"},
     )
     s.record_action_attempt(
         action="explore",
-        attempt=ActionAttempt(
-            task_id="t-2",
-            status="failed",
-            decision="no_promote",
-            result={"error_class": "subprocess_nonzero", "error": "rc=1"},
-        ),
+        task_id="t-2",
+        status="failed",
+        decision="no_promote",
+        result={"error_class": "subprocess_nonzero", "error": "rc=1"},
     )
     txt = s.to_prompt_summary()
     assert "last_baseline=" in txt
@@ -642,13 +645,11 @@ def test_save_load_round_trips_attempt_fields(tmp_path):
     s = SharedState()
     s.record_action_attempt(
         action="profile",
-        attempt=ActionAttempt(
-            task_id="p-1",
-            status="succeeded",
-            decision="promoted",
-            result={"output_throughput": 100.0},
-            extras={"trace_path": "/tmp/trace.json"},
-        ),
+        task_id="p-1",
+        status="succeeded",
+        decision="promoted",
+        result={"output_throughput": 100.0},
+        extras={"trace_path": "/tmp/trace.json"},
     )
     s.save(tmp_path)
     s2 = SharedState.load_or_init(tmp_path)
@@ -952,16 +953,14 @@ def test_record_action_attempt_kv_cache_oom_captures_stderr_tail():
     s = SharedState()
     s.record_action_attempt(
         action="baseline",
-        attempt=ActionAttempt(
-            task_id="t-kvoom",
-            status="failed",
-            decision="no_promote",
-            result={
-                "error_class": "kv_cache_oom",
-                "error": "Loaded weights leave no GPU memory for the KV cache",
-                "reported_success": False,
-            },
-        ),
+        task_id="t-kvoom",
+        status="failed",
+        decision="no_promote",
+        result={
+            "error_class": "kv_cache_oom",
+            "error": "Loaded weights leave no GPU memory for the KV cache",
+            "reported_success": False,
+        },
     )
     attempt = s.baseline_attempts[-1]
     assert attempt["error_class"] == "kv_cache_oom"

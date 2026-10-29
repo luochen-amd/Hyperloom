@@ -12,23 +12,26 @@ from types import SimpleNamespace
 import pytest
 
 from kernelforge.config import Config
-from kernelforge.config import KnowledgeConfig, KnowledgeStoreMode
+from kernelforge.knowledge.kb_store.config import (
+    KnowledgeConfig,
+    KnowledgeStoreMode,
+)
 from kernelforge.knowledge.kb_store.identity.kernel_recipe import (
     KernelRecipeIdentity,
     kernel_recipe_canonical_id,
 )
-from kernelforge.workflows.flydsl_rewrite import driver_contract, identity as rewrite_identity, kb
+from kernelforge.rewrite_by_flydsl import driver_contract, identity as rewrite_identity, kb
 from kernelforge.knowledge.kb_store import record_store
 from kernelforge.knowledge.kb_store.recipe import (
     KernelRecipeKB,
     candidate_session_id as build_candidate_session_id,
 )
-from kernelforge.workflows.flydsl_rewrite.identity import (
+from kernelforge.rewrite_by_flydsl.identity import (
     framework_version,
     segment,
 )
-from kernelforge.workflows.flydsl_rewrite.measurement import FlydslMeasurement
-from kernelforge.workflows.flydsl_rewrite.spec import RewriteSpec
+from kernelforge.rewrite_by_flydsl.measurement import FlydslMeasurement
+from kernelforge.rewrite_by_flydsl.spec import RewriteSpec
 
 VLLM_VERSION = framework_version("vllm")
 SOFTMAX_IDENTITY = f"kernel:flydsl:softmax:vllm:{VLLM_VERSION}:flydsl:mi355x"
@@ -1253,7 +1256,7 @@ def test_a_failing_store_read_propagates_from_the_read_plan(tmp_path, monkeypatc
 
 
 def test_a_failing_store_read_cold_starts_through_the_rewrite_reader(tmp_path, monkeypatch):
-    from kernelforge.workflows.flydsl_rewrite import runner
+    from kernelforge.rewrite_by_flydsl import runner
 
     spec, target = _failing_read_target(tmp_path, monkeypatch)
     seed = Path(spec.flydsl_kernel).read_bytes()

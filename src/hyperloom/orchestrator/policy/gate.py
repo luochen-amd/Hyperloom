@@ -24,17 +24,15 @@ from hyperloom.inference_optimizer.framework_paths import (
     resolve_session_framework_root,
     resolved_within,
 )
-from hyperloom.common.coerce import first_text
 from hyperloom.common.env import env_bool
 from hyperloom.common.framework_arm import verdict_subject
 from hyperloom.common.visible_devices import detect_gpu_count
-from hyperloom.inference_optimizer.protocol.intent import ALLOWED_VERDICTS, EXTEND_LEASE_MAX_SEC, Intent, IntentType
+from hyperloom.inference_optimizer.protocol.intent import EXTEND_LEASE_MAX_SEC, Intent, IntentType
 from hyperloom.inference_optimizer.protocol.action_surfaces import (
     COORDINATOR_INTERNAL_ACTIONS,
     COORDINATOR_OWNED_KERNEL_REQUEST_KINDS,
     KERNEL_AGENT_OWNED_ACTIONS,
 )
-from ..mcp_tool_names import agent_tool_grant, qualified_context_tool_name
 from .projection import (
     RULE_GPU_EXCEEDS_CAPACITY,
     RULE_GPU_POOL_DISABLED,
@@ -171,6 +169,17 @@ REQUEST_ROUTING: dict[str, frozenset[str]] = {
 # Critic-only: REVIEW_VERDICT
 REVIEW_VERDICT_SOURCE_ALLOWLIST: frozenset[str] = frozenset({"critic"})
 
+# Verdict vocabulary for review_verdict
+REVIEW_VERDICTS: frozenset[str] = frozenset(
+    {
+        "approve",
+        "reject",
+        "redirect",
+        "advise",
+        "needs_review",
+    }
+)
+
 
 # prune_branch scopes. ``family`` retires the action for the rest of the run;
 # ``queued`` only drains the backlog and leaves the family usable.
@@ -203,6 +212,7 @@ PATH_LIKE_FIELDS: frozenset[str] = frozenset(
         "json_path",
         "md_path",
         "session_dir",
+        "backup_root",
         "manifest_path",
     }
 )
@@ -360,10 +370,6 @@ class PolicyGate:
     def allowed_tools_for_agent(self, agent_name: str) -> list[str]:
         """Return the Claude tool list a reactor may use (Codex → []; Claude → emit_intent; orchestration also gets context-pull tools + sandboxed Read + web search).
 
-        The names come from :func:`agent_tool_grant`, so MCP tools carry the
-        ``mcp__<server>__<tool>`` prefix the runtime registers them under (as
-        :data:`PR_MONITOR_TOOL_NAMES` already does).
-
         Args:
             agent_name (str): the name of the agent whose tool list is
                 requested.
@@ -377,7 +383,14 @@ class PolicyGate:
             return []
         if role.no_tools:
             return []
-        return agent_tool_grant(agent_name)
+        tools = ["emit_intent"]
+        if agent_name == "orchestration":
+            from ..roles.mcp_context_tools import CONTEXT_TOOL_NAMES
+
+            tools.extend(CONTEXT_TOOL_NAMES)
+            tools.append("Read")
+            tools.extend(["WebSearch", "WebFetch"])
+        return tools
 
     # Per-intent validators
     def _validate_delegate(self, role: "AgentRole", payload: dict[str, Any]) -> None:
@@ -612,7 +625,7 @@ class PolicyGate:
         ``target_proposal_msg_id`` is present, and that exactly one of the
         single ``verdict`` field or the per-variant ``verdict_map`` is
         supplied. Every verdict string (single or per-variant) must belong
-        to the closed :data:`ALLOWED_VERDICTS` vocabulary.
+        to the closed :data:`REVIEW_VERDICTS` vocabulary.
 
         Args:
             role (AgentRole): the resolved role of the emitting agent.
@@ -626,7 +639,7 @@ class PolicyGate:
         Raises:
             PolicyDenied: if the role is not a Critic, the target id is
                 missing, neither/both verdict forms are present, or a
-                verdict string is outside ``ALLOWED_VERDICTS``.
+                verdict string is outside ``REVIEW_VERDICTS``.
         """
         if role.name not in REVIEW_VERDICT_SOURCE_ALLOWLIST:
             raise PolicyDenied(
@@ -657,23 +670,23 @@ class PolicyGate:
             )
         if has_single:
             verdict = str(payload.get("verdict", "")).strip()
-            if verdict not in ALLOWED_VERDICTS:
+            if verdict not in REVIEW_VERDICTS:
                 raise PolicyDenied(
-                    f"review_verdict.verdict={verdict!r} not in allowed set {sorted(ALLOWED_VERDICTS)!r}",
+                    f"review_verdict.verdict={verdict!r} not in allowed set {sorted(REVIEW_VERDICTS)!r}",
                     rule="payload",
-                    hint=f"use one of {'/'.join(sorted(ALLOWED_VERDICTS))}",
+                    hint="use one of approve/reject/redirect/advise/needs_review",
                 )
             return
         # verdict_map path — every entry's verdict must be in the closed vocab.
         for vname, entry in verdict_map.items():
             v = str((entry or {}).get("verdict") or "").strip()
-            if v not in ALLOWED_VERDICTS:
+            if v not in REVIEW_VERDICTS:
                 raise PolicyDenied(
                     f"review_verdict.verdict_map[{vname!r}].verdict="
                     f"{v!r} not in allowed set "
-                    f"{sorted(ALLOWED_VERDICTS)!r}",
+                    f"{sorted(REVIEW_VERDICTS)!r}",
                     rule="payload",
-                    hint=f"every per-variant verdict must be one of {'/'.join(sorted(ALLOWED_VERDICTS))}",
+                    hint=("every per-variant verdict must be one of approve/reject/redirect/advise/needs_review"),
                 )
 
     # GEMM tuning ownership
@@ -1033,7 +1046,7 @@ class PolicyGate:
 
         # Build the anchor candidate set the gap's domain_hint may name.
         candidates: set[str] = set()
-        domain_key = first_text(params.get("domain"))
+        domain_key = str(params.get("domain") or "").strip()
         if domain_key:
             candidates.add(domain_key.lower())
             d = get_domain(domain_key)
@@ -1055,15 +1068,15 @@ class PolicyGate:
             g
             for g in gaps
             if isinstance(g, dict)
-            and first_text(g.get("canonical_id"))
-            and first_text(g.get("domain_hint")).lower() in candidates
+            and str(g.get("canonical_id") or "").strip()
+            and str(g.get("domain_hint") or "").strip().lower() in candidates
         ]
         if not matches:
             return ""
         matches.sort(key=gap_actionability_key)
-        # Every match carries a non-empty canonical id.
-        chosen = first_text(matches[0].get("canonical_id"))
-        params["gap_canonical_id"] = chosen
+        chosen = str(matches[0].get("canonical_id") or "").strip()
+        if chosen:
+            params["gap_canonical_id"] = chosen
         return chosen
 
     def _validate_freeform_specialist_dispatch(
@@ -1153,7 +1166,6 @@ class PolicyGate:
                 positive integer within :data:`EXTEND_LEASE_MAX_SEC`, or no
                 such task was running when the projection was taken.
         """
-        running_tasks = qualified_context_tool_name("get_running_tasks")
         task_id = str(payload.get("task_id", "")).strip()
         if not task_id:
             raise PolicyDenied("extend_lease missing task_id", rule="payload")
@@ -1170,7 +1182,7 @@ class PolicyGate:
                 rule="extend_lease_bounds",
                 hint=(
                     f"Extend at most {EXTEND_LEASE_MAX_SEC}s per call; call again while the task runs to extend "
-                    f"further. Re-check {running_tasks} between steps."
+                    "further. Re-check get_running_tasks between steps."
                 ),
             )
         live = self.resources.live_task_ids
@@ -1179,7 +1191,7 @@ class PolicyGate:
         raise PolicyDenied(
             f"extend_lease: task {task_id!r} was not running when the resource facts were read",
             rule=RULE_LEASE_NOT_LIVE,
-            hint=f"Re-read {running_tasks}; a finished task's lease cannot be extended.",
+            hint="Re-read get_running_tasks; a finished task's lease cannot be extended.",
         )
 
     def _path_under_session(self, value: str) -> bool:
@@ -1558,6 +1570,7 @@ __all__ = [
     "validate_freeform_wave_task",
     "validate_specialist_max_turns_raw",
     "REQUEST_ROUTING",
+    "REVIEW_VERDICTS",
     "REVIEW_VERDICT_SOURCE_ALLOWLIST",
     "TRACE_PATH_LIKE_FIELDS",
     "SOURCE_LIKE_FIELDS",

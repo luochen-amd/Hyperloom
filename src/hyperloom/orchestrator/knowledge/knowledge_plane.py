@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .config import KnowledgeConfig
+from .pr_monitor import PRMonitorClient
 
 
 log = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 class KnowledgePlane:
     """Single facade for the knowledge sources."""
 
-    pr_monitor_enabled: bool = False
+    pr_monitor: PRMonitorClient | None = None
     pr_monitor_mcp_url: str = ""
     recipe_kb: Any = None
     config: KnowledgeConfig | None = None
@@ -29,20 +30,30 @@ class KnowledgePlane:
     def from_clients(
         cls,
         *,
-        pr_monitor_enabled: bool = False,
+        pr_monitor: PRMonitorClient | None = None,
         pr_monitor_mcp_url: str = "",
         recipe_kb: Any = None,
         config: KnowledgeConfig | None = None,
         kb_disabled: bool = False,
     ) -> "KnowledgePlane":
         """Construct a plane from injected clients and config."""
+        resolved = config or KnowledgeConfig.from_env()
+        resolved = replace(
+            resolved,
+            pr_monitor_enabled=bool(pr_monitor is not None and pr_monitor.enabled),
+        )
         return cls(
-            pr_monitor_enabled=pr_monitor_enabled,
+            pr_monitor=pr_monitor,
             pr_monitor_mcp_url=(pr_monitor_mcp_url or "").strip(),
             recipe_kb=recipe_kb,
-            config=config or KnowledgeConfig.from_env(),
+            config=resolved,
             kb_disabled=kb_disabled,
         )
+
+    @property
+    def pr_monitor_enabled(self) -> bool:
+        """Whether the PR Monitor client is wired and enabled."""
+        return self.pr_monitor is not None and self.pr_monitor.enabled
 
     def specialist_mcp_url(self) -> str:
         """MCP URL to advertise in the specialist tool whitelist."""

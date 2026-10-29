@@ -20,12 +20,12 @@ async def run_quantization_prelude_async(
     from hyperloom.agents.quantization import quantize_via_prompt
 
     workspace = Path(workspace)
+    export_dir = workspace / "quantized"
 
-    # Fold the source model + export dir into the prompt so the user's --quantize text can be just the scheme. The
-    # export dir is relative: every run gets its own directory under the workspace and must export inside it.
+    # Fold the source model + export dir into the prompt so the user's --quantize text can be just the scheme.
     effective_prompt = (
         f"Quantize the model at {source_model}. "
-        f"Export the HuggingFace-format quantized model to `quantized/` in your workspace. "
+        f"Export the HuggingFace-format quantized model to {export_dir}. "
         f"Run the COMPLETE PTQ phase chain end-to-end in this one session "
         f"(intake -> plan -> manifest -> exec -> export -> validate -> eval); "
         f"do not stop early or hand back to a parent agent. "
@@ -41,7 +41,6 @@ async def run_quantization_prelude_async(
 
     final = result.assessment.final
     qdir = result.quantized_model_dir
-    details = result.run_dir or workspace
 
     if result.status == "success":
         print(f"Quantization: success (final={final}, eval_gap={result.assessment.eval_gap}) -> {qdir}")
@@ -50,14 +49,14 @@ async def run_quantization_prelude_async(
     if result.status == "partial" and qdir is not None:
         print(
             f"Quantization: PARTIAL (final={final}); quantized model is loadable "
-            f"so continuing, but audit/eval was incomplete. Review {details}.",
+            f"so continuing, but audit/eval was incomplete. Review {workspace}.",
             file=sys.stderr,
         )
         return str(qdir)
 
     print(
         f"ERROR: quantization {result.status} (final={final}). Refusing to "
-        f"optimize the un-quantized source model. See {details} for details.",
+        f"optimize the un-quantized source model. See {workspace} for details.",
         file=sys.stderr,
     )
     raise SystemExit(QUANTIZATION_FAILED_EXIT_CODE)

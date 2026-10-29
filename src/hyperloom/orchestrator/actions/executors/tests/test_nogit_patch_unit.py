@@ -159,8 +159,9 @@ def test_prepare_readonly_copy_preserves_target_and_backup_modes(tmp_path):
     record = {
         "target": str(target),
         "existed": True,
-        "backup": str(backup),
+        "backup_path": str(backup),
         "pre_image_sha256": ledger.file_digest(backup),
+        "revert_action": "restore",
         "mode": 0o444,
     }
     assert ledger.append_record(backup_root, record)
@@ -179,7 +180,7 @@ def test_prepare_uses_platform_fsync_access_mode(tmp_path, monkeypatch, platform
     backup_root.mkdir()
     backup = backup_root / "target.bak"
     backup.write_bytes(b"original\n")
-    assert ledger.append_record(backup_root, {"backup": str(backup)})
+    assert ledger.append_record(backup_root, {"backup_path": str(backup)})
     opened = []
     synced = []
     real_open = Path.open
@@ -236,8 +237,9 @@ def test_already_applied_noop_requires_durable_prepare(tmp_path, monkeypatch, pr
             {
                 "target": str(target),
                 "existed": True,
-                "backup": str(backup),
+                "backup_path": str(backup),
                 "pre_image_sha256": ledger.file_digest(backup),
+                "revert_action": "restore",
             }
         )
         assert ledger.append_record(backup_root, prior_records[0])
@@ -344,8 +346,8 @@ def test_backup_names_unique_across_patches_same_basename(tmp_path):
     assert len(backups_b) >= 1
 
     # Backup files must be distinct: no path collision.
-    bak_paths_a = {r["backup"] for r in backups_a if r["backup"]}
-    bak_paths_b = {r["backup"] for r in backups_b if r["backup"]}
+    bak_paths_a = {r["backup_path"] for r in backups_a if r.get("backup_path")}
+    bak_paths_b = {r["backup_path"] for r in backups_b if r.get("backup_path")}
     assert bak_paths_a.isdisjoint(bak_paths_b), f"backup paths collide between patches: {bak_paths_a & bak_paths_b}"
 
     # The patch_a backup must retain the original content.
@@ -367,8 +369,8 @@ def test_seq_offset_zero_gives_deterministic_names(tmp_path):
         pytest.skip(f"patch CLI unavailable: {result.error}")
 
     for r in result.backups:
-        if r["backup"]:
-            name = Path(r["backup"]).name
+        if r.get("backup_path"):
+            name = Path(r["backup_path"]).name
             assert "mypatch" in name, f"patch stem missing from backup name: {name!r}"
             assert name.endswith(".bak"), f"backup name doesn't end in .bak: {name!r}"
 
@@ -381,8 +383,12 @@ rename to new_name.py
 """
 
 
-def test_revert_restores_a_source_the_patch_moved_away(tmp_path):
-    """A rename source is gone from the tree at revert time, so its record must recreate it from the backup."""
+@pytest.mark.parametrize("revert_action", ("restore", "restore_old"))
+def test_revert_restores_a_source_the_patch_moved_away(tmp_path, revert_action):
+    """A rename source is gone from the tree at revert time, so its record must recreate it from the backup.
+
+    ``restore_old`` is the label an older build wrote; its ledger has to survive a resume on this one.
+    """
     old_file = tmp_path / "old_name.py"
     bak = tmp_path / "bk" / "backup.bak"
     bak.parent.mkdir(parents=True)
@@ -391,7 +397,8 @@ def test_revert_restores_a_source_the_patch_moved_away(tmp_path):
         {
             "target": str(old_file),
             "existed": True,
-            "backup": str(bak),
+            "backup_path": str(bak),
+            "revert_action": revert_action,
             "pre_image_sha256": ledger.file_digest(bak),
         }
     ]
@@ -400,25 +407,6 @@ def test_revert_restores_a_source_the_patch_moved_away(tmp_path):
 
     assert errors == []
     assert old_file.read_text() == "original_content\n"
-
-
-def test_ledger_written_by_an_older_build_still_restores(tmp_path):
-    """A resumed ledger record that names its copy ``backup_path`` still restores the target."""
-    target = tmp_path / "target.py"
-    bak = tmp_path / "backup.bak"
-    bak.write_text("original_content\n", encoding="utf-8")
-    record = {
-        "target": str(target),
-        "existed": True,
-        "backup_path": str(bak),
-        "revert_action": "restore_old",
-        "pre_image_sha256": ledger.file_digest(bak),
-    }
-
-    _reverted, errors = ledger.restore_records([record])
-
-    assert errors == []
-    assert target.read_text() == "original_content\n"
 
 
 def test_rename_is_recorded_even_though_it_has_no_hunks(tmp_path):
@@ -430,8 +418,11 @@ def test_rename_is_recorded_even_though_it_has_no_hunks(tmp_path):
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bk")
 
     records = {Path(r["target"]).name: r for r in result.backups}
-    assert {name: r["existed"] for name, r in records.items()} == {"old_name.py": True, "new_name.py": False}
-    assert records["old_name.py"]["backup"] is not None
+    assert {name: r["revert_action"] for name, r in records.items()} == {
+        "old_name.py": "restore",
+        "new_name.py": "delete",
+    }
+    assert records["old_name.py"]["backup_path"] is not None
 
 
 # ApplyFeedback structure tests
@@ -586,7 +577,7 @@ def test_apply_create_file_then_revert_deletes(tmp_path):
 
     created = tmp_path / "created.py"
     assert created.exists()
-    delete_recs = [r for r in result.backups if not r["existed"]]
+    delete_recs = [r for r in result.backups if r.get("revert_action") == "delete"]
     assert delete_recs, "create hunk must record a delete revert action"
 
     ledger.restore_records(result.backups)
@@ -616,7 +607,7 @@ def test_apply_delete_file_backs_up_and_reverts(tmp_path):
         pytest.skip(f"patch CLI unavailable: {result.error}")
 
     assert not doomed.exists(), "delete hunk must remove the file"
-    restore_recs = [r for r in result.backups if r["existed"]]
+    restore_recs = [r for r in result.backups if r.get("revert_action") == "restore"]
     assert restore_recs, "delete hunk must back up the existing file"
 
     ledger.restore_records(result.backups)
@@ -639,9 +630,9 @@ def test_apply_delete_missing_file_records_delete(tmp_path, monkeypatch):
     patch_file.write_text(DELETE_DIFF, encoding="utf-8")
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bak")
     assert result.ok is True
-    delete_recs = [r for r in result.backups if not r["existed"]]
+    delete_recs = [r for r in result.backups if r.get("revert_action") == "delete"]
     assert delete_recs, "absent delete target must still record a delete action"
-    assert delete_recs[0]["backup"] is None
+    assert delete_recs[0]["backup_path"] is None
 
 
 # _apply_patch_no_git — target escapes framework root
@@ -786,7 +777,8 @@ def test_revert_restore_error_is_reported_not_raised(tmp_path, monkeypatch):
         {
             "target": str(tmp_path / "t.py"),
             "existed": True,
-            "backup": str(bak),
+            "backup_path": str(bak),
+            "revert_action": "restore",
             "pre_image_sha256": ledger.file_digest(bak),
         }
     ]
@@ -801,11 +793,11 @@ def test_revert_restore_error_is_reported_not_raised(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("present", [True, False], ids=["present", "absent"])
 def test_revert_delete_leaves_no_created_target(tmp_path, present):
-    """A created target is removed on revert, and one already gone is not an error."""
+    """revert_action='delete' removes a created target, and one already gone is not an error."""
     t = tmp_path / "created.py"
     if present:
         t.write_text("x\n", encoding="utf-8")
-    records = [{"target": str(t), "existed": False, "backup": None}]
+    records = [{"target": str(t), "existed": False, "backup_path": None, "revert_action": "delete"}]
     _, errors = ledger.restore_records(records)
     assert errors == []
     assert not t.exists()
@@ -840,8 +832,8 @@ def test_modification_existing_file_backed_up(tmp_path, monkeypatch):
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bak")
     assert result.ok is True
     assert result.feedback is None
-    restore = [r for r in result.backups if r["existed"]]
-    assert restore and restore[0]["backup"] is not None
+    restore = [r for r in result.backups if r.get("revert_action") == "restore"]
+    assert restore and restore[0]["backup_path"] is not None
 
 
 def test_unprefixed_modification_at_p0_records_one_restore(tmp_path, monkeypatch):
@@ -854,7 +846,7 @@ def test_unprefixed_modification_at_p0_records_one_restore(tmp_path, monkeypatch
 
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bak")
     assert result.ok, result.error
-    assert [(r["target"], r["existed"]) for r in result.backups] == [(str(target.resolve()), True)]
+    assert [(r["target"], r["revert_action"]) for r in result.backups] == [(str(target.resolve()), "restore")]
 
 
 def test_modification_missing_file_records_delete(tmp_path, monkeypatch):
@@ -864,8 +856,8 @@ def test_modification_missing_file_records_delete(tmp_path, monkeypatch):
     patch_file.write_text(MODIFY_SAME_PATH_DIFF, encoding="utf-8")
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bak")
     assert result.ok is True
-    delete = [r for r in result.backups if not r["existed"]]
-    assert delete and delete[0]["backup"] is None
+    delete = [r for r in result.backups if r.get("revert_action") == "delete"]
+    assert delete and delete[0]["backup_path"] is None
 
 
 def test_modification_target_escape_rejected(tmp_path, monkeypatch):
@@ -891,8 +883,8 @@ def test_delete_existing_file_backed_up(tmp_path, monkeypatch):
 
     result = ng._apply_patch_no_git(tmp_path, patch_file, tmp_path / "bak")
     assert result.ok is True
-    restore = [r for r in result.backups if r["existed"]]
-    assert restore and restore[0]["backup"] is not None
+    restore = [r for r in result.backups if r.get("revert_action") == "restore"]
+    assert restore and restore[0]["backup_path"] is not None
 
 
 def test_create_target_escape_rejected(tmp_path, monkeypatch):

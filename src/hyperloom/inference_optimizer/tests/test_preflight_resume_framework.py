@@ -10,6 +10,7 @@ with "serving framework 'sglang' is not importable" on a host that only carries 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -48,25 +49,40 @@ class _ReachedServingCheck(Exception):
 
 
 def _run_preflight_to_serving_check(monkeypatch, args) -> list[tuple[str, str]]:
-    """Drive the real ``_preflight`` through to the serving-framework step.
+    """Drive the real ``_preflight`` through the framework-deps and serving-framework steps.
 
-    Every other install step is skipped; the serving-framework step runs its real code down to the point where it
-    names a framework (the importability probe), which is recorded.
+    Every other install step is recorded and skipped; the two framework steps run their real code down to the point
+    where they name a framework (the deps installer and the importability probe), which is recorded.
     """
     seen: list[tuple[str, str]] = []
+
+    class _StopDeps(Exception):
+        pass
+
+    def fake_ensure(framework, *, python_exe, pip_extra):
+        seen.append(("framework_deps", framework))
+        raise _StopDeps
 
     def fake_resolve_build(framework, interpreters):
         seen.append(("check_serving_framework", framework))
         raise _ReachedServingCheck
 
     def run_install_step(event, *, step_id, category, action, **_kw):
+        if step_id == "framework_deps":
+            # The deps step only records which framework it was asked to install; stop it before any pip run.
+            with contextlib.suppress(_StopDeps):
+                action()
+            return {}
         if step_id == "check_serving_framework":
             return action()
         return {}
 
+    from hyperloom.inference_optimizer import framework_deps
+
+    monkeypatch.setattr(framework_deps, "ensure", fake_ensure)
     monkeypatch.setattr(preflight, "_resolve_framework_build", fake_resolve_build)
     monkeypatch.setattr(preflight, "_run_install_step", run_install_step)
-    monkeypatch.setattr(preflight, "_export_llm_endpoints", lambda: ("", ""))
+    monkeypatch.setattr(preflight, "_resolve_llm_endpoints", lambda: ("", ""))
     monkeypatch.setattr(preflight, "_normalize_hip_visible_devices", lambda: None)
     monkeypatch.delenv(preflight.SKIP_FRAMEWORK_CHECK_ENV, raising=False)
     monkeypatch.delenv("BENCHMARK_BASE_URL", raising=False)
@@ -84,7 +100,7 @@ def test_resume_without_framework_checks_the_sessions_framework(monkeypatch, tmp
 
     seen = _run_preflight_to_serving_check(monkeypatch, args)
 
-    assert seen == [("check_serving_framework", "vllm")]
+    assert seen == [("framework_deps", "vllm"), ("check_serving_framework", "vllm")]
     assert args.framework == "vllm"
     assert os.environ["FRAMEWORK"] == "vllm"
 
@@ -95,7 +111,7 @@ def test_resume_with_the_matching_framework_checks_it(monkeypatch, tmp_path):
 
     seen = _run_preflight_to_serving_check(monkeypatch, args)
 
-    assert seen == [("check_serving_framework", "vllm")]
+    assert seen == [("framework_deps", "vllm"), ("check_serving_framework", "vllm")]
     assert args.framework == "vllm"
 
 
@@ -122,7 +138,7 @@ def test_fresh_launch_keeps_the_default_framework(monkeypatch, tmp_path):
 
     seen = _run_preflight_to_serving_check(monkeypatch, args)
 
-    assert seen == [("check_serving_framework", "sglang")]
+    assert seen == [("framework_deps", "sglang"), ("check_serving_framework", "sglang")]
     assert args.framework is None
 
 
@@ -164,10 +180,17 @@ def test_resume_carries_the_persisted_kernel_toggle(tmp_path, kernel_enabled, ex
 def test_a_persisted_framework_that_is_not_a_registered_name_is_refused_before_any_install(
     monkeypatch, tmp_path, capsys, persisted
 ):
+    from hyperloom.inference_optimizer import framework_deps
+
     def began_checking(_args):
         raise AssertionError("preflight started its install steps for a session whose framework is not registered")
 
+    def installed(*_a, **_kw):
+        raise AssertionError("preflight reached dependency installation for an unregistered framework")
+
     monkeypatch.setattr(preflight, "_begin_install_event", began_checking)
+    monkeypatch.setattr(framework_deps, "ensure", installed)
+    monkeypatch.setattr(framework_deps, "manifest_path", installed)
     args = _args(resume_from=str(_session(tmp_path, framework=persisted)))
 
     with pytest.raises(SystemExit) as excinfo:
@@ -206,14 +229,18 @@ def _session_without_state(tmp_path: Path, manifest: object) -> Path:
 
 
 def _refuse_any_install(monkeypatch) -> None:
+    from hyperloom.inference_optimizer import framework_deps
+
     def began_checking(_args):
         raise AssertionError("preflight started its install steps for a session it cannot resume")
 
-    def checked(*_a, **_kw):
-        raise AssertionError("preflight reached the framework check for a session it cannot resume")
+    def installed(*_a, **_kw):
+        raise AssertionError("preflight reached dependency installation for a session it cannot resume")
 
     monkeypatch.setattr(preflight, "_begin_install_event", began_checking)
-    monkeypatch.setattr(preflight, "_resolve_framework_build", checked)
+    monkeypatch.setattr(framework_deps, "ensure", installed)
+    monkeypatch.setattr(framework_deps, "manifest_path", installed)
+    monkeypatch.setattr(preflight, "_resolve_framework_build", installed)
 
 
 @pytest.mark.parametrize("environment_framework", [None, "sglang"])

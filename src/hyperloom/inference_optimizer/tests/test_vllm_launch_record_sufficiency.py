@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hyperloom.common.launch_log_evidence import observed_server_identity_from_log
-from hyperloom.orchestrator.actions.executors._launch_evidence import RequestedLaunch, build_launch_evidence
+from hyperloom.orchestrator.actions.executors._launch_evidence import build_launch_evidence
 from hyperloom.orchestrator.enablement.recipe import build_recipe_steps, evaluate_replay_sufficiency
 from hyperloom.orchestrator.enablement.recipe.attempts import build_attempt_summary
 from hyperloom.orchestrator.enablement.recipe.projections import project_launch_evidence
@@ -71,9 +71,12 @@ def _launch_codes(tmp_path: Path, requested: str = REQUESTED, log_text: str = VL
     config = tmp_path / "bench.yaml"
     config.write_text("benchmark: {}\n", encoding="utf-8")
     evidence = build_launch_evidence(
-        RequestedLaunch(config, "vllm", server_args=requested, model_path=MODEL),
+        config_path=config,
         actual_server_log=_log(tmp_path, log_text),
+        framework="vllm",
         slot=tmp_path / "slot",
+        requested_server_args=requested,
+        model_path=MODEL,
     )
     projected, refused = project_launch_evidence(evidence)
     assert refused is False
@@ -117,7 +120,7 @@ def test_a_width_absent_from_the_record_is_vllms_default(tmp_path: Path) -> None
     config = tmp_path / "bench.yaml"
     config.write_text("benchmark: {}\n", encoding="utf-8")
     evidence = build_launch_evidence(
-        RequestedLaunch(config, "vllm"), actual_server_log=_log(tmp_path), slot=tmp_path / "slot"
+        config_path=config, actual_server_log=_log(tmp_path), framework="vllm", slot=tmp_path / "slot"
     )
     assert evidence["observed_model_binding"]["tp"] == "8"
     assert evidence["observed_model_binding"]["dp"] == "1"
@@ -170,9 +173,11 @@ def test_the_published_identity_holds_only_what_the_launch_asked_for(tmp_path: P
     config = tmp_path / "bench.yaml"
     config.write_text("benchmark: {}\n", encoding="utf-8")
     evidence = build_launch_evidence(
-        RequestedLaunch(config, "vllm", server_args=REQUESTED),
+        config_path=config,
         actual_server_log=_log(tmp_path, record),
+        framework="vllm",
         slot=tmp_path / "slot",
+        requested_server_args=REQUESTED,
     )
     assert "kv_transfer_config" in evidence["observed_server_identity"], "observed in full"
     identity = project_launch_evidence(evidence)[0]["observed_server_identity"]
@@ -192,12 +197,12 @@ def test_the_published_identity_carries_no_host_path_or_secret(tmp_path: Path) -
     config = tmp_path / "bench.yaml"
     config.write_text("benchmark: {}\n", encoding="utf-8")
     evidence = build_launch_evidence(
-        # Requested, so it is the sanitizer and not the requested-only filter that removes them.
-        RequestedLaunch(
-            config, "vllm", server_args="--max-num-seqs 64 --api-key x --chat-template t.jinja --hf-overrides {}"
-        ),
+        config_path=config,
         actual_server_log=_log(tmp_path, log_text),
+        framework="vllm",
         slot=tmp_path / "slot",
+        # Requested, so it is the sanitizer and not the requested-only filter that removes them.
+        requested_server_args="--max-num-seqs 64 --api-key x --chat-template t.jinja --hf-overrides {}",
     )
     projected, _ = project_launch_evidence(evidence)
     identity = projected["observed_server_identity"]

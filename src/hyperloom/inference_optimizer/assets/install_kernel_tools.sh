@@ -93,13 +93,14 @@ INFERENCEX_PATH="${INFERENCEX_PATH:-}"
 # (env / .env); leave it unset for the base-only report. No separate toggle.
 TRACELENS_REPO="https://github.com/AMD-AGI/TraceLens.git"
 # TraceLens SHA.
-TRACELENS_REF="cf0221e3b1b1915d5272a10e2f5237d2d9c5f0cb"
-# Operator override iff TRACELENS_ROOT is not a TraceLens@<sha> checkout in the
-# cache root. Installs re-export that path (kernel-agent env, .env), so a
-# presence-only check would freeze a rerun on the old checkout instead of
-# cloning/realigning to the current TRACELENS_REF (#722).
+TRACELENS_REF="614c597bc0c66cabf6a15152037324acc7386090"
+# Operator override iff TRACELENS_ROOT points OUTSIDE the pod-local default.
+# The persistent kernel-agent env re-exports the resolved default path, so a
+# presence-only check (${VAR:+1}) would misclassify it as an override and skip
+# the managed clone/realign, leaving a missing/stale default un-self-healed
+# across reruns (#722). Compare against the default path, not env presence.
 # Canonicalize a path (resolve symlinks/.. , strip trailing slash) so the
-# override comparison matches the Python side's Path.resolve();
+# default-vs-override comparison matches the Python side's Path.resolve();
 # unresolvable paths fall back to the trimmed literal so a not-yet-cloned
 # default still compares correctly (#722 / PR#789).
 # Keep in lockstep with Python-side path canonicalization helpers.
@@ -128,15 +129,11 @@ _home_dir() {
   printf '%s' "${h:-/}"
 }
 _TRACELENS_SHA="$(_resolve_ref_sha "$TRACELENS_REPO" "$TRACELENS_REF")"
+_tracelens_default_root="$(_canonicalize_path "${_open_source_root}/TraceLens@${_TRACELENS_SHA}")"
 _tracelens_root_was_set=""
-if [ -n "${TRACELENS_ROOT:-}" ]; then
-  _tracelens_root_canonical="$(_canonicalize_path "${TRACELENS_ROOT}")"
-  if [ "$(dirname "${_tracelens_root_canonical}")" = "$(_canonicalize_path "${_open_source_root}")" ] \
-     && [[ "$(basename "${_tracelens_root_canonical}")" == TraceLens@* ]]; then
-    TRACELENS_ROOT=""
-  else
-    _tracelens_root_was_set=1
-  fi
+if [ -n "${TRACELENS_ROOT:-}" ] \
+   && [ "$(_canonicalize_path "${TRACELENS_ROOT}")" != "${_tracelens_default_root}" ]; then
+  _tracelens_root_was_set=1
 fi
 TRACELENS_ROOT="${TRACELENS_ROOT:-${_open_source_root}/TraceLens@${_TRACELENS_SHA}}"
 TRACELENS_INTERNAL_ROOT="${TRACELENS_INTERNAL_ROOT:-}"
@@ -368,15 +365,12 @@ ensure_moreutils() {
 }
 
 _RAY_VERSION_WAS_SET="${RAY_VERSION+x}"
+_RAY_CLI_CLICK_MAX_VERSION_WAS_SET="${RAY_CLI_CLICK_MAX_VERSION+x}"
 RAY_VERSION="${RAY_VERSION:-2.44.1}"
+# Ray 2.44.1's CLI currently fails during import with click >= 8.3.0.
+RAY_CLI_CLICK_MAX_VERSION="${RAY_CLI_CLICK_MAX_VERSION:-8.3.0}"
 RAY_INSTALL_SPEC="ray[default]==${RAY_VERSION}"
-# A representative `ray start` argv of the one this script runs on the head below:
-# every option, with values of its kind (probed ports, the node's GPU count, the
-# head's custom resources). ensure_ray certifies the CLI by handing this argv to
-# Ray's own parser rather than by checking the version of click it is built on, so
-# a click release that leaves the CLI working is never a reason to refuse or
-# downgrade the install. Quoted the way a shell quotes it: the probe uses shlex.
-RAY_START_ARGV="--head --disable-usage-stats --port=6379 --ray-client-server-port=10001 --num-gpus=1 --include-dashboard=false --resources='{\"serving_slot\": 1}'"
+CLICK_INSTALL_SPEC="click<${RAY_CLI_CLICK_MAX_VERSION}"
 
 # The default Ray pin predates newer CPython ABIs (no cp314 wheels before
 # 2.55.0), so on such interpreters the exact pin cannot resolve at all. Print
@@ -435,39 +429,51 @@ resolve_ray_version() {
   warn "ray ${RAY_VERSION} has no wheel for this interpreter ($(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)); using ray ${resolved} instead"
   RAY_VERSION="$resolved"
   RAY_INSTALL_SPEC="ray[default]==${RAY_VERSION}"
+  # The click ceiling exists for 2.44.1's CLI import bug; past that version it
+  # would pin click below what the newer Ray itself ships against.
+  if [ -z "$_RAY_CLI_CLICK_MAX_VERSION_WAS_SET" ]; then
+    RAY_CLI_CLICK_MAX_VERSION=""
+    CLICK_INSTALL_SPEC=""
+  fi
 }
 
 ensure_ray() {
   resolve_ray_version
-  log "ensuring ${RAY_INSTALL_SPEC}"
+  log "ensuring ${RAY_INSTALL_SPEC}${CLICK_INSTALL_SPEC:+ and ${CLICK_INSTALL_SPEC}}"
   if [ "$CHECK_ONLY" -eq 0 ]; then
-    run python3 -m pip install --quiet --no-cache-dir --break-system-packages "$RAY_INSTALL_SPEC"
+    if [ -n "$CLICK_INSTALL_SPEC" ]; then
+      run python3 -m pip install --quiet --no-cache-dir --break-system-packages "$CLICK_INSTALL_SPEC" "$RAY_INSTALL_SPEC"
+    else
+      run python3 -m pip install --quiet --no-cache-dir --break-system-packages "$RAY_INSTALL_SPEC"
+    fi
   fi
   if [ "$DRY_RUN" -eq 0 ]; then
-    RAY_VERSION="$RAY_VERSION" RAY_START_ARGV="$RAY_START_ARGV" python3 - <<'PY'
+    RAY_VERSION="$RAY_VERSION" RAY_CLI_CLICK_MAX_VERSION="$RAY_CLI_CLICK_MAX_VERSION" python3 - <<'PY'
+import importlib.metadata as md
 import os
-import shlex
+import re
+import sys
 
 import ray
 
 RAY_VERSION = os.environ["RAY_VERSION"]
-RAY_START_ARGV = shlex.split(os.environ["RAY_START_ARGV"])
+RAY_CLI_CLICK_MAX_VERSION = os.environ["RAY_CLI_CLICK_MAX_VERSION"]
+
+def _version_tuple(version: str) -> tuple[int, int, int]:
+    parts = [int(p) for p in re.findall(r"\d+", version)[:3]]
+    parts.extend([0] * (3 - len(parts)))
+    return tuple(parts[:3])
 
 if ray.__version__ != RAY_VERSION:
     raise SystemExit(f"ray version mismatch: {ray.__version__} != {RAY_VERSION}")
+click_version = md.version("click")
+if RAY_CLI_CLICK_MAX_VERSION and _version_tuple(click_version) >= _version_tuple(RAY_CLI_CLICK_MAX_VERSION):
+    raise SystemExit(f"click version incompatible with Ray CLI: {click_version} >= {RAY_CLI_CLICK_MAX_VERSION}")
 try:
-    import click
-    from ray.scripts.scripts import cli as _ray_cli  # `main` only wraps this group
+    from ray.scripts.scripts import main as _ray_cli_main  # noqa: F401
 except Exception as exc:
     raise SystemExit(f"ray CLI import failed: {type(exc).__name__}: {exc}") from exc
-try:
-    _ray_start = _ray_cli.commands["start"]
-    _ray_start.make_context("start", list(RAY_START_ARGV), resilient_parsing=False).close()
-except click.UsageError as exc:
-    raise SystemExit(f"ray start does not accept {' '.join(RAY_START_ARGV)}: {exc.format_message()}") from exc
-except Exception as exc:
-    raise SystemExit(f"ray CLI has no usable start command: {type(exc).__name__}: {exc}") from exc
-print(f"[kernel-agent] ray version: {ray.__version__}, ray start accepts {' '.join(RAY_START_ARGV)}")
+print(f"[kernel-agent] ray version: {ray.__version__}, click version: {click_version}")
 PY
   fi
 }
@@ -960,11 +966,10 @@ write_env_file() {
   [ -n "${USER_DATA_PATH:-}" ] && upsert_dotenv_var USER_DATA_PATH "$USER_DATA_PATH"
   [ -n "${HYPERLOOM_RUNTIME_DIR:-}" ] && upsert_dotenv_var HYPERLOOM_RUNTIME_DIR "$HYPERLOOM_RUNTIME_DIR"
   [ -n "${KERNEL_AGENT_ENV:-}" ] && upsert_dotenv_var KERNEL_AGENT_ENV "$KERNEL_AGENT_ENV"
-  # Derived from the MAGPIE_REF / INFERENCEX_REF pins; a .env copy would read back as an override that skips them.
-  remove_dotenv_var MAGPIE_PATH
+  [ -n "${MAGPIE_PATH:-}" ] && upsert_dotenv_var MAGPIE_PATH "$MAGPIE_PATH"
   [ -n "${MAGPIE_PYTHON:-}" ] && upsert_dotenv_var MAGPIE_PYTHON "$MAGPIE_PYTHON"
   [ -n "${PYTHONPATH:-}" ] && upsert_dotenv_var PYTHONPATH "$PYTHONPATH"
-  remove_dotenv_var INFERENCEX_PATH
+  [ -n "${INFERENCEX_PATH:-}" ] && upsert_dotenv_var INFERENCEX_PATH "$INFERENCEX_PATH"
   # Persist each provider's own canonical vars (write when present, clear when
   # absent) so an operator's .env creds survive a re-install. Never cross-write
   # and never persist gateway aliases, so the two providers stay separated.

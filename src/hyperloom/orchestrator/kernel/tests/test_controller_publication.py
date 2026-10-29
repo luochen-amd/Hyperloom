@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kernelforge.workflows.rewrite_controller.paths import operator_directory_name
+from kernelforge.kernel_rewrite_controller.paths import operator_directory_name
 from hyperloom.orchestrator.kernel.controller_publication import (
     ControllerPublicationError,
     discover_controller_patch_dirs,

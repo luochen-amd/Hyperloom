@@ -92,8 +92,10 @@ def capability_rows(breakdown: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "attempts": explore.tested,
             "keeps": explore.keeps,
             "extras": {
+                "tested": explore.tested,
                 "rounds": len(explore.rounds),
                 "best_gain": explore.best_gain_pct,
+                "keep_unstable": explore.keep_unstable,
             },
         },
         "specialist": {
@@ -137,7 +139,8 @@ def render(breakdown: dict[str, Any]) -> RenderedSection:
 
     Produces a status/attempts/keeps table for each capability in a
     stable order, one structured :class:`Decision` per non-``not_attempted``
-    capability, and a one-line fact per row.
+    capability, and a one-line fact per row. Skipped when no capability
+    recorded anything.
 
     Args:
         breakdown (dict[str, Any]): The full ``session_breakdown.json`` dict.
@@ -187,4 +190,5 @@ def render(breakdown: dict[str, Any]) -> RenderedSection:
         markdown_block=md,
         decisions=decisions,
         warnings=warnings,
+        skipped=not rows,
     )

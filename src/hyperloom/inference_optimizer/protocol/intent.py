@@ -37,6 +37,8 @@ class IntentType(str, Enum):
     # Orchestration scheduling and phase control.
     PRUNE_BRANCH = "prune_branch"
     ESCALATE_STRATEGY_CHANGE = "escalate_strategy_change"
+    # specialist exit: one per task.
+    SPECIALIST_DONE = "specialist_done"
 
 
 @dataclass
@@ -59,6 +61,8 @@ _PAYLOAD_REQUIRED: dict[IntentType, tuple[str, ...]] = {
     IntentType.EXTEND_LEASE: ("task_id", "extra_sec"),
     IntentType.PRUNE_BRANCH: ("family", "reason"),
     IntentType.ESCALATE_STRATEGY_CHANGE: ("reason", "next_action_hint"),
+    # specialist exit envelope; the runner re-stamps and defaults the payload.
+    IntentType.SPECIALIST_DONE: ("gap_canonical_id", "domain", "proposal_set", "summary"),
 }
 
 
@@ -67,7 +71,12 @@ class NoIntentEmitted(RuntimeError):
 
 
 class IntentValidationError(RuntimeError):
-    """Envelope present but schema invalid."""
+    """Envelope present but schema invalid (raw + reason captured)."""
+
+    def __init__(self, reason: str, raw: str | None = None):
+        """Initialise the validation error."""
+        super().__init__(reason)
+        self.raw = raw
 
 
 def _without_unset_fields(payload: dict[str, Any]) -> dict[str, Any]:

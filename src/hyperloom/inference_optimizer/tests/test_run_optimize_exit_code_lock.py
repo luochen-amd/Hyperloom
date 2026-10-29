@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 import hyperloom.inference_optimizer.cli as ocli
-from hyperloom.inference_optimizer.cli import launch_shape, model_catalog
 from hyperloom.inference_optimizer.breakdown.recorder.assembler import assemble_parts
 from hyperloom.inference_optimizer.breakdown.recorder.outcome_stage import record_stage_reached
 from hyperloom.inference_optimizer.session.lock import SessionLock
@@ -85,7 +84,7 @@ def test_completed_close_still_gets_its_close_out_package(tmp_path: Path, monkey
 def test_optimize_has_no_supervisor_launcher_hooks() -> None:
     import inspect
 
-    source = "".join(inspect.getsource(module) for module in (ocli, model_catalog, launch_shape))
+    source = inspect.getsource(ocli)
     assert "spawn_supervisor" not in source
     assert "stop_supervisor" not in source
     assert "orchestrator.supervisor" not in source

@@ -806,9 +806,9 @@ class _NeverStartedGpuLease:
         self.start_calls = 0
         self.kwargs: dict[str, Any] = {}
 
-    def start_async(self, launch: Any) -> None:
+    def start_async(self, _cmd: list[str], **kwargs: Any) -> None:
         self.start_calls += 1
-        self.kwargs = {name: value for name, value in vars(launch).items() if name != "cmd"}
+        self.kwargs = dict(kwargs)
         raise RuntimeError("setup failure must precede Ray submission")
 
 
@@ -1017,9 +1017,9 @@ class _RecordingGpuLease:
         self.started: dict[str, Any] = {}
         self._alive = False
 
-    def start_async(self, launch: Any) -> None:
-        self.started = {**vars(launch), "cmd": list(launch.cmd)}
-        Path(launch.log_path).write_text("", encoding="utf-8")
+    def start_async(self, cmd: list[str], **kwargs: Any) -> None:
+        self.started = {"cmd": list(cmd), **kwargs}
+        Path(kwargs["log_path"]).write_text("", encoding="utf-8")
         (self.workspace / "specialist_done.json").write_text(
             '{"proposal_set":[],"summary":"ray"}',
             encoding="utf-8",
@@ -1074,6 +1074,7 @@ async def test_ray_codex_launch_uses_replace_env_and_prompt_file_stdin(
     )
 
     assert result.exit_code == 0
+    assert lease.started["env_mode"] == "replace"
     assert lease.started["stdin_path"] == str(workspace / "prompt.md")
     assert Path(lease.started["stdin_path"]).read_text(encoding="utf-8") == "ray user prompt"
     assert lease.started["cmd"][-1] == "-"

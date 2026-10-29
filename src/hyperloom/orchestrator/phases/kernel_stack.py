@@ -9,11 +9,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, NoReturn
-from hyperloom.common.gain_math import gain_pct_or_zero
 from hyperloom.common.perf_metric import GradedComparison, VERDICT_KEEP, VERDICT_REVERT
 from hyperloom.inference_optimizer.breakdown.stop_reasons import PATCH_RECOVERY_INCOMPLETE_STOP_REASON
-from ..kernel import kernel_decisions
-from ..kernel.keep_thresholds import KERNEL_STACK_VALIDATION_KEEP_THRESHOLD_PCT
 from ..kernel.patch_lifecycle import (
     CLEANUP_ACTION_NONE,
     CLEANUP_ACTION_REVERT,
@@ -225,6 +222,8 @@ def _stack_validation_record(
     settlement: _StackSettlement,
 ) -> dict[str, Any]:
     """The integrate-shaped record one stack validation publishes."""
+    from ..kernel.request_handlers import KERNEL_STACK_VALIDATION_KEEP_THRESHOLD_PCT
+
     bench = run.bench_result if isinstance(run.bench_result, dict) else {}
     record: dict[str, Any] = {
         "status": settlement.top_status,
@@ -315,7 +314,7 @@ class KernelStackPhase(CoordinatorCollaborator):
         drained = 0
         max_drain = 10
         while drained < max_drain:
-            pending_records = kernel_decisions.pending_kernel_integration_records(state)
+            pending_records = state.pending_kernel_integration_records()
             if not pending_records:
                 break
             pending = pending_records[0]
@@ -342,7 +341,7 @@ class KernelStackPhase(CoordinatorCollaborator):
                     state.record_kernel_integrate_result(result)
                     if str(result.get("decision") or "").upper() == "KEEP":
                         await self._coord.writeback.record_integrate_keep(result)
-            except Exception as exc:  # isolation boundary: one pending KEEP integrate, marked rejected
+            except Exception as exc:
                 log.exception(
                     "SWEEP entry: integrate(%s) raised %r; marking rejected to prevent drain loop deadlock",
                     kid,
@@ -607,6 +606,7 @@ class KernelStackPhase(CoordinatorCollaborator):
         """Grade a stacked-patch measurement against current_best and decide the stack's fate."""
         # Lazy (re-)import so tests can monkeypatch it on the source module.
         from ..actions.executors.benchmark_result import is_valid_measurement
+        from ..kernel.request_handlers import KERNEL_STACK_VALIDATION_KEEP_THRESHOLD_PCT
 
         if not is_valid_measurement(bench_result):
             return _StackGrade("REVERT", VERDICT_REVERT, 0.0, -100.0, -100.0, None, "")
@@ -625,17 +625,19 @@ class KernelStackPhase(CoordinatorCollaborator):
             decision=_graded_stack_decision(graded, stack_id),
             verdict=graded.verdict,
             new_tput=new_tput,
-            gain_pct=gain_pct_or_zero(new_tput, base_tput),
-            incremental_gain_pct=gain_pct_or_zero(graded.candidate, graded.reference),
+            gain_pct=(new_tput - base_tput) / base_tput * 100.0 if base_tput > 0 else 0.0,
+            incremental_gain_pct=(
+                (graded.candidate - graded.reference) / graded.reference * 100.0 if graded.reference > 0 else 0.0
+            ),
             objective=graded.objective,
             degrade_reason=graded.degrade_reason,
         )
 
     def _accuracy_gate_withholds_keep(self, bench_result: dict[str, Any], workspace: Path, stack_id: str) -> bool:
         """Whether the accuracy gate refuses a stack the KEEP its throughput earned."""
-        from ..kernel.integrate_accuracy import grade_integrate_accuracy
+        from ..kernel.request_handlers import _grade_integrate_accuracy
 
-        accuracy_gate = grade_integrate_accuracy(
+        accuracy_gate = _grade_integrate_accuracy(
             bench_result,
             baseline_accuracy=float(self.shared_state.baseline_accuracy or 0.0),
             workspace=workspace,
@@ -687,6 +689,5 @@ class KernelStackPhase(CoordinatorCollaborator):
                 apply_results=apply_results,
             )
             return _stack_validation_record(stack, run, grade, settlement)
-        except Exception as exc:  # isolation boundary: one stack validation, reverted and recorded as abandoned
-            log.warning("kernel stack %s validation failed: %s", stack.stack_id, exc, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
             return _abandoned_stack_record(stack, apply_results, exc)

@@ -128,11 +128,16 @@ def resolve_session_model_path(
     *,
     params: dict[str, Any] | None = None,
     state_model_path: str = "",
+    for_serving: bool = False,
 ) -> str:
-    """The session's model path, resolved for serving: params, then ``$MODEL_PATH``, then the state's."""
+    """Unified session model-path precedence for executors and handlers."""
     raw = (
         str((params or {}).get("model_path") or "").strip()
         or os.environ.get("MODEL_PATH", "").strip()
         or str(state_model_path or "").strip()
     )
-    return resolve_serving_model_path(raw)
+    if not raw:
+        return ""
+    if for_serving:
+        return resolve_serving_model_path(raw)
+    return raw

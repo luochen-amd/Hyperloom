@@ -117,19 +117,6 @@ def patches_dir(session_dir: Path, kernel_id: str) -> Path:
     return Path(session_dir) / "patches" / kid
 
 
-_KERNEL_PATCH_BACKUPS: str = "backup"
-
-
-def kernel_patch_backup_root(session_dir: Path, kernel_id: str) -> Path:
-    """``<sd>/patches/<kernel_id>/backup/`` — one subdirectory per kernel-patch apply, holding its manifest and backups."""
-    return patches_dir(session_dir, kernel_id) / _KERNEL_PATCH_BACKUPS
-
-
-def kernel_patch_backup_roots(session_dir: Path) -> list[Path]:
-    """Every :func:`kernel_patch_backup_root` in the session."""
-    return sorted((Path(session_dir) / "patches").glob(f"*/{_KERNEL_PATCH_BACKUPS}"))
-
-
 # Session-breakdown record fragments (recorder write-side spool).
 def breakdown_parts_dir(session_dir: Path) -> Path:
     """``<sd>/runtime/breakdown/parts/`` — per-producer breakdown record fragments."""
@@ -193,6 +180,11 @@ def trace_dir(session_dir: Path) -> Path:
 def llm_calls_path(session_dir: Path) -> Path:
     """``<sd>/reports/trace/llm_calls.jsonl`` — append-only ledger of every in-process LLM call; the ``component`` label is drawn from the closed set :data:`hyperloom.inference_optimizer.trace.llm_trace.VALID_COMPONENTS` (e.g. orchestration / kernel_agent / specialist / critic)."""
     return trace_dir(session_dir) / "llm_calls.jsonl"
+
+
+def trace_ext_dir(session_dir: Path) -> Path:
+    """``<sd>/reports/trace/ext/`` — parent of every out-of-process child's own ``<component>-<pid>.jsonl`` shard."""
+    return trace_dir(session_dir) / "ext"
 
 
 def trajectory_dir(session_dir: Path) -> Path:
@@ -264,6 +256,11 @@ def next_forge_attempt_dir(session_dir: Path, macro_cycle: int) -> Path:
             except ValueError:
                 continue
     return forge_attempt_dir(session_dir, macro_cycle, highest + 1)
+
+
+def forge_handoff_dir(session_dir: Path, macro_cycle: int) -> Path:
+    """Return the handoff directory for one Forge macro cycle."""
+    return forge_cycle_dir(session_dir, macro_cycle) / "handoff"
 
 
 def competitor_target_json(session_dir: Path) -> Path:
@@ -345,6 +342,21 @@ def recipe_kb_lessons_json(session_dir: Path) -> Path:
     return recipe_kb_dir(session_dir) / ".kb_lessons.json"
 
 
+def recipe_kb_pending_ndjson(session_dir: Path) -> Path:
+    """``<sd>/runtime/recipe_kb/.kb_pending.ndjson`` — legacy async KB write queue."""
+    return recipe_kb_dir(session_dir) / ".kb_pending.ndjson"
+
+
+def recipe_kb_flushed_ndjson(session_dir: Path) -> Path:
+    """Compute the path to ``.kb_flushed.ndjson``, the successfully-POSTed rows."""
+    return recipe_kb_dir(session_dir) / ".kb_flushed.ndjson"
+
+
+def recipe_kb_dead_letter_ndjson(session_dir: Path) -> Path:
+    """Compute the path to ``.kb_dead_letter.ndjson``, the permanent-failure rows."""
+    return recipe_kb_dir(session_dir) / ".kb_dead_letter.ndjson"
+
+
 # recipe-snapshot per-session bookkeeping.
 def recipe_snapshot_dir(session_dir: Path) -> Path:
     """Compute ``<sd>/runtime/recipe_snapshot/``, the dispatcher bookkeeping root."""
@@ -354,6 +366,11 @@ def recipe_snapshot_dir(session_dir: Path) -> Path:
 def recipe_snapshot_audit_jsonl(session_dir: Path) -> Path:
     """``<sd>/runtime/recipe_snapshot/.audit.jsonl`` — append-only audit of local Recipe operations and remote KB Store publish attempts."""
     return recipe_snapshot_dir(session_dir) / ".audit.jsonl"
+
+
+def pr_monitor_status_json(session_dir: Path) -> Path:
+    """``<sd>/runtime/recipe_kb/.pr_monitor_status.json`` — boot-time PR Monitor reachability snapshot."""
+    return recipe_kb_dir(session_dir) / ".pr_monitor_status.json"
 
 
 def _prune_old_workdirs(root: Path, *, keep: int) -> None:
@@ -410,8 +427,11 @@ __all__ = [
     "breakdown_parts_dir",
     "competitor_target_json",
     "conversations_path",
+    "recipe_kb_dead_letter_ndjson",
     "recipe_kb_dir",
+    "recipe_kb_flushed_ndjson",
     "recipe_kb_lessons_json",
+    "recipe_kb_pending_ndjson",
     "recipe_kb_pitfalls_json",
     "decision_trace_path",
     "proposal_task_map_path",
@@ -422,6 +442,7 @@ __all__ = [
     "patches_dir",
     "failure_evidence_path",
     "forge_cycle_dir",
+    "forge_handoff_dir",
     "BRINGUP_SEGMENT",
     "ENABLEMENT_SEGMENT",
     "enablement_builds_dir",

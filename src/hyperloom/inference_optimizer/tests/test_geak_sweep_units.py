@@ -15,10 +15,12 @@ import pytest
 
 from hyperloom.common.visible_devices import VISIBLE_DEVICE_VARS
 from hyperloom.orchestrator.actions.executors import _geak_sweep
-from hyperloom.orchestrator.actions.executors._geak_sweep import GeakSweepSpec, sweep_via_geak
+from hyperloom.orchestrator.actions.executors._geak_sweep import sweep_via_geak
+from hyperloom.orchestrator.actions.executors._grid_base import coerce_extra_envs
 from hyperloom.orchestrator.kernel.conc_sweep import _budget_limited_without_valid_pair
 from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.actions.executors._gpu_pin import (
+    _parse_server_arg_value,
     resolve_gpu_pin,
     _resolve_handoff_gpu_ids,
     _resolve_handoff_gpu_ids_space,
@@ -59,7 +61,9 @@ async def test_sweep_via_geak_uses_validated_regimes_and_pins_num_prompts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No ``bench_protocol`` -> fall back to the first ``validated_regimes`` entry, whose NUM_PROMPTS reaches the point."""
+    """No ``bench_protocol`` -> fall back to the first ``validated_regimes`` entry; ``pin_num_prompts`` forwards that
+    regime's NUM_PROMPTS onto the point.
+    """
     bench = _bench_script(tmp_path)
     monkeypatch.setenv("MODEL_PATH", "/models/x")
     monkeypatch.setenv("FRAMEWORK", "sglang")
@@ -95,8 +99,12 @@ async def test_sweep_via_geak_uses_validated_regimes_and_pins_num_prompts(
             ],
             "accepted_config": {"flags": "", "env": ""},
         },
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30, repeats=1),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
+        repeats=1,
+        pin_num_prompts=True,
     )
 
     assert result["status"] == "succeeded"
@@ -143,8 +151,11 @@ async def test_sweep_via_geak_prefers_executable_final_launch_script(
             "final_launch_script": str(final),
             "accepted_config": {},
         },
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30, repeats=3),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
+        repeats=3,
     )
 
     out_dir = tmp_path / "sweep" / "variant_0_conc1_isl16_osl16"
@@ -173,8 +184,10 @@ async def test_tuning_cannot_fall_back_without_its_deployment(
             "accepted_config": {"flags": "--tp 1"},
             "tuning_skillset": {"gate": "accepted", requirement: ["required-data"]},
         },
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=10),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=10,
     )
     assert result["status"] == "failed"
     assert result["error_class"] == "missing_deployment_launcher"
@@ -189,8 +202,11 @@ async def test_flags_only_can_still_replay_without_a_final_launcher(tmp_path: Pa
     bench.write_text("#!/bin/bash\ntouch " + shlex.quote(str(marker)) + "\n", encoding="utf-8")
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "final_launch_script": str(tmp_path / "missing.sh")},
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=10, repeats=1),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=10,
+        repeats=1,
     )
     assert marker.is_file()
     assert result["replay_mode"] == "bench_e2e_fallback"
@@ -214,8 +230,10 @@ async def test_sweep_via_geak_marks_variant_failed_on_subprocess_error(
 
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "output_dir": str(tmp_path), "accepted_config": {}},
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
     )
 
     assert result["status"] == "failed"
@@ -247,8 +265,10 @@ async def test_sweep_keeps_point_artifacts_and_continues_after_accuracy_parse_fa
     monkeypatch.setattr(_geak_sweep, "parse_eval_results", parse_accuracy)
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "accepted_config": {}},
-        spec=GeakSweepSpec(conc_values=[1, 2], isl_osl_configs=["16:16"], variant_timeout_sec=30),
+        conc_values=[1, 2],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
     )
 
     failed, succeeded = result["points"]
@@ -377,8 +397,11 @@ async def test_geak_replay_uses_existing_client_contract(
             "gpu_ids_space": "absolute",
             "bench_client": bench_client,
         },
-        spec=GeakSweepSpec(conc_values=[4], isl_osl_configs=["16:16"], variant_timeout_sec=30, repeats=3),
+        conc_values=[4],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
+        repeats=3,
     )
 
     assert captured["BENCH_CLIENT"] == bench_client
@@ -423,8 +446,10 @@ async def test_sweep_replays_normalized_return_environment_and_fresh_accuracy(
     monkeypatch.setattr(_geak_sweep.subprocess, "run", _fake_run)
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "accepted_config": accepted_config, "accuracy": 0.99},
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
     )
 
     assert dict(token.split("=", 1) for token in shlex.split(captured["EXTRA_ENV"])) == expected_env
@@ -448,8 +473,10 @@ async def test_sweep_rejects_malformed_structured_environment_before_launch(
     monkeypatch.setattr(_geak_sweep.subprocess, "run", _must_not_launch)
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "accepted_config": {"env_map": env_map, "env": "VALID=1"}},
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "sweep",
+        variant_timeout_sec=30,
     )
     assert result["status"] == "failed"
     assert result["error_class"] == "invalid_accepted_config"
@@ -479,8 +506,10 @@ async def test_sweep_reads_only_fresh_native_quality(
     monkeypatch.setattr(_geak_sweep.subprocess, "run", _fake_run)
     result = await sweep_via_geak(
         result={"bench_script": str(bench), "accuracy": 0.99, "eval_dir": str(tmp_path)},
-        spec=GeakSweepSpec(conc_values=[1], isl_osl_configs=["16:16"], variant_timeout_sec=30),
+        conc_values=[1],
+        isl_osl_configs=["16:16"],
         output_root=tmp_path / "fresh_sweep",
+        variant_timeout_sec=30,
     )
     assert result["promotion_measurement"]["accuracy"] == native_accuracy
 
@@ -518,3 +547,22 @@ def test_budget_limited_without_valid_pair_paths() -> None:
         )
         is True
     )
+
+
+def test_coerce_extra_envs_skips_malformed_tokens() -> None:
+    """The GEAK/sweep env coercion drops empty tokens and empty keys in both the shell-string and token-list shapes rather than emitting junk keys."""
+    # Shell-string shape: leading separator -> empty token; ``=v`` -> empty key.
+    assert coerce_extra_envs("; =v FOO=1") == {"FOO": "1"}
+    # Token-list shape: dict item with a None key, a token without ``=``, a non-string item, and an empty-key ``=v``
+    # are all skipped.
+    assert coerce_extra_envs([{None: "x", "A": "1"}, "noeq", 123, "=v", "B=2"]) == {"A": "1", "B": "2"}
+
+
+def test_parse_server_arg_value_falls_back_on_unbalanced_quotes() -> None:
+    """The GEAK handoff recovers a flag value even when the server-args string is not shlex-parseable (unbalanced quote -> plain ``str.split`` fallback)."""
+    got = _parse_server_arg_value('--max-model-len 4096 "unbalanced', "--max-model-len")
+    assert got == "4096"
+    # ``--flag=value`` form is also handled.
+    assert _parse_server_arg_value("--gpu-memory-utilization=0.9", "--gpu-memory-utilization") == "0.9"
+    # Absent flag -> None.
+    assert _parse_server_arg_value("--tp 8", "--max-model-len") is None

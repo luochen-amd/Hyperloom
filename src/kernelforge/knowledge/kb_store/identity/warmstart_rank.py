@@ -15,9 +15,16 @@ from kernelforge.knowledge.kb_store.identity.kernel_recipe import (
     KernelRecipeIdentity,
     kernel_recipe_canonical_id,
 )
-from kernelforge.utils.gpu_arch import canon_arch
 
 _UNUSABLE = {"", "unknown", "none", "unspecified"}
+_GPU_ISA = {
+    "mi300x": "gfx942",
+    "amd_instinct_mi300x": "gfx942",
+    "mi308x": "gfx942",
+    "mi325x": "gfx942",
+    "mi355x": "gfx950",
+    "amd_instinct_mi355x": "gfx950",
+}
 
 
 @dataclass(frozen=True)
@@ -63,8 +70,9 @@ def _gpu_affinity(target: str, candidate: str) -> int:
     candidate_value = str(candidate or "").strip().lower()
     if candidate_value == target_value:
         return 3
-    target_isa = canon_arch(target_value)
-    if target_isa and target_isa == canon_arch(candidate_value):
+    target_isa = _GPU_ISA.get(target_value)
+    candidate_isa = _GPU_ISA.get(candidate_value)
+    if target_isa and target_isa == candidate_isa:
         return 2
     return 1
 

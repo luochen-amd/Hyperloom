@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 from hyperloom.orchestrator.actions.executors._proposal_identity import (
-    BaseControls,
     controls_of,
     effective_fingerprint,
     is_executable,
@@ -48,7 +47,9 @@ def test_effective_fingerprint_matches_the_pinned_executor_values(args, envs, va
             args,
             envs,
             controls=_controls(*variant),
-            base=BaseControls(remove_args=b_remove, unset_envs=b_unset, args_mode=b_mode),
+            base_remove_args=b_remove,
+            base_unset_envs=b_unset,
+            base_args_mode=b_mode,
         )
         == expected
     )
@@ -57,14 +58,12 @@ def test_effective_fingerprint_matches_the_pinned_executor_values(args, envs, va
 def test_base_controls_change_the_fingerprint():
     controls = _controls(["--x"], [], "append")
     assert effective_fingerprint("--a 1", {}, controls=controls) != effective_fingerprint(
-        "--a 1", {}, controls=controls, base=BaseControls(remove_args=["--b"])
+        "--a 1", {}, controls=controls, base_remove_args=["--b"]
     )
 
 
 def test_removal_union_is_base_first_and_deduped():
-    both = effective_fingerprint(
-        "", {}, controls=_controls(["--b", "--v"], [], "append"), base=BaseControls(remove_args=["--b"])
-    )
+    both = effective_fingerprint("", {}, controls=_controls(["--b", "--v"], [], "append"), base_remove_args=["--b"])
     assert both == effective_fingerprint("", {}, controls=_controls(["--b", "--v"], [], "append"))
 
 

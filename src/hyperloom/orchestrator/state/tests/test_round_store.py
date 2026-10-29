@@ -559,6 +559,7 @@ async def test_every_path_writes_the_same_outbox_row_and_answer(store):
                     *round_lease,
                     "1970-01-01T00:16:40.000000+00:00",
                     "1970-01-01T00:26:50.000000+00:00",
+                    "1970-01-01T00:16:50.000000+00:00",
                 )
             ]
         ),
@@ -573,6 +574,7 @@ async def test_every_path_writes_the_same_outbox_row_and_answer(store):
                     *round_lease,
                     "1970-01-01T00:16:40.000000+00:00",
                     "1970-01-01T00:22:00.000000+00:00",
+                    "1970-01-01T00:17:00.000000+00:00",
                 )
             ]
         ),
@@ -592,6 +594,7 @@ async def test_every_path_writes_the_same_outbox_row_and_answer(store):
                     *round_lease,
                     "1970-01-01T00:17:31.000000+00:00",
                     "1970-01-01T00:27:31.000000+00:00",
+                    "1970-01-01T00:17:31.000000+00:00",
                 )
             ]
         ),

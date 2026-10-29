@@ -6,33 +6,29 @@ import asyncio
 import hashlib
 import json
 import subprocess
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
-import kernelforge.workflows.forge_loop.bootstrap.reporter as reporter_module
-import kernelforge.workflows.forge_loop.bootstrap.run as forge_loop_command
-import kernelforge.workflows.forge_loop.bootstrap.warm_start as warm_start_module
-import kernelforge.workflows.forge_loop.bootstrap.relay as relay_module
-import kernelforge.workflows.forge_loop.campaign.recovery as recovery_module
-import kernelforge.workflows.forge_loop.roles.agent as agent_module
-import kernelforge.workflows.forge_loop.roles.analysis as analysis_module
-import kernelforge.workflows.forge_loop.roles.orchestration as orchestration_module
-import kernelforge.workflows.forge_loop.roles.supervisor as supervisor_module
+import kernelforge.cli.forge_loop_command as forge_loop_command
+import kernelforge.cli.relay as relay_module
+import kernelforge.loop.recovery as recovery_module
+import kernelforge.orchestrator.agent as agent_module
+import kernelforge.orchestrator.analysis as analysis_module
+import kernelforge.orchestrator.orchestration as orchestration_module
+import kernelforge.orchestrator.supervisor as supervisor_module
 from kernelforge.cli import main
-from kernelforge.workflows.forge_loop.bootstrap.session_budget import _forge_session_timeout_sec
+from kernelforge.cli.session_budget import _forge_session_timeout_sec
 from kernelforge.config import Config
-from kernelforge.workflows.forge_loop.campaign.campaign_config import (
+from kernelforge.loop.campaign_config import (
     CampaignConfigStore,
     CampaignInputs,
     create_campaign_config,
 )
-from kernelforge.workflows.forge_loop.memory.experience import ExperienceLedger
-from kernelforge.workflows.forge_loop.memory.knowledge_integration import WarmStartRollbackError
-from kernelforge.workflows.forge_loop.search.agent_relay import (
+from kernelforge.loop.experience import ExperienceLedger
+from kernelforge.loop.agent_relay import (
     AgentAvailabilitySnapshot,
     AgentProfileSpec,
     AgentRelayPolicy,
@@ -40,13 +36,13 @@ from kernelforge.workflows.forge_loop.search.agent_relay import (
     ProfileAvailability,
     ProviderAvailability,
 )
-from kernelforge.workflows.forge_loop.campaign.run_state import (
+from kernelforge.loop.run_state import (
     SESSION_PAUSED,
     LoopStateStore,
     RunState,
     WorkspaceLockError,
 )
-from kernelforge.workflows.forge_loop.iteration.runner import IterationConfig, IterationLoop
+from kernelforge.loop.runner import IterationConfig, IterationLoop
 
 
 # The forge-loop CLI activates per-workspace aiter cache isolation, which writes AITER_ROOT_DIR / AITER_JIT_DIR (and
@@ -238,14 +234,14 @@ def _install_cli_fakes(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(relay_module, "probe_agent_profiles", fake_probe_agent_profiles)
-    monkeypatch.setattr(warm_start_module, "kb_warmstart", fake_warmstart)
+    monkeypatch.setattr(forge_loop_command, "kb_warmstart", fake_warmstart)
     monkeypatch.setattr(
-        reporter_module,
+        forge_loop_command,
         "write_experience_to_kb",
         fake_write,
     )
-    monkeypatch.setattr("kernelforge.workflows.forge_loop.iteration.runner.IterationLoop", FakeLoop)
-    monkeypatch.setattr("kernelforge.workflows.forge_loop.campaign.experiment.ExperimentTracker", FakeTracker)
+    monkeypatch.setattr("kernelforge.loop.runner.IterationLoop", FakeLoop)
+    monkeypatch.setattr("kernelforge.tracker.ExperimentTracker", FakeTracker)
 
     def fake_make_agent_fn(config, setup, **kwargs):
         captured["agent_fn_setup"] = setup
@@ -422,7 +418,7 @@ def test_the_ceiling_estimator_gets_the_resolved_session_budget_and_the_deployme
         seen["agent_timeout_sec"] = session.timeout_sec
         return "outcome"
 
-    monkeypatch.setattr("kernelforge.roofline_ceiling.standalone.resolve_analyst_backend", fake_backend)
+    monkeypatch.setattr("kernelforge.roofline_ceiling.command.resolve_analyst_backend", fake_backend)
     monkeypatch.setattr("kernelforge.roofline_ceiling.estimate.estimate_ceiling", fake_estimate)
     estimator = captured["loops"][-1].ceiling_estimator
     asyncio.run(estimator(case_ids=["a"], case_ms={"a": 1.0}))
@@ -507,7 +503,7 @@ def test_a_warm_start_rejected_by_the_task_suite_is_not_returned(
             "reference_program_md_addition": "REFERENCE ONLY",
         }
 
-    monkeypatch.setattr(warm_start_module, "kb_warmstart", rejected_warmstart)
+    monkeypatch.setattr(forge_loop_command, "kb_warmstart", rejected_warmstart)
     result_json = tmp_path / "rejected-warm-start.json"
 
     result, workspace = _invoke_forge_loop(
@@ -634,13 +630,13 @@ def test_warm_start_publication_failure_rolls_back_and_continues_reference_only(
             "reference_program_md_addition": "REFERENCE ONLY",
         }
 
-    monkeypatch.setattr(warm_start_module, "kb_warmstart", applied_warmstart)
+    monkeypatch.setattr(forge_loop_command, "kb_warmstart", applied_warmstart)
 
     def fail_publication(*_args, **_kwargs):
         raise OSError("manifest failed")
 
     monkeypatch.setattr(
-        warm_start_module,
+        forge_loop_command,
         "publish_warm_start_recovery",
         fail_publication,
     )
@@ -672,9 +668,9 @@ def test_warm_start_rollback_failure_exits_cleanly_with_code_two(
     _install_cli_fakes(monkeypatch, tmp_path)
 
     def fail_rollback(**_kwargs):
-        raise WarmStartRollbackError("restore failed")
+        raise forge_loop_command.WarmStartRollbackError("restore failed")
 
-    monkeypatch.setattr(warm_start_module, "kb_warmstart", fail_rollback)
+    monkeypatch.setattr(forge_loop_command, "kb_warmstart", fail_rollback)
     result, _workspace = _invoke_forge_loop(tmp_path, [])
 
     assert result.exit_code == 2
@@ -701,7 +697,7 @@ def _fresh_command(workspace, kernel, driver):
 
 @pytest.mark.parametrize("prepare_ok", [True, False])
 def test_assembly_cli_prepares_before_optimizer_and_keeps_original_export_base(tmp_path, monkeypatch, prepare_ok):
-    from kernelforge.kernel_backends.assembly import prepare as preparation
+    from kernelforge.assembly import prepare as preparation
 
     captured = _install_cli_fakes(monkeypatch, tmp_path)
     workspace, kernel, driver = _initialize_workspace(tmp_path)
@@ -950,7 +946,7 @@ def test_forge_loop_persists_deadline_read_status(tmp_path, monkeypatch):
         tmp_path,
         [
             "--deadline-unix",
-            str(time.time() + 650),
+            str(forge_loop_command.time.time() + 650),
             "--result-json",
             str(result_json),
         ],
@@ -970,7 +966,7 @@ def test_forge_loop_persists_sanitized_read_error(tmp_path, monkeypatch):
     captured = _install_cli_fakes(monkeypatch, tmp_path)
     result_json = tmp_path / "forge-result.json"
     monkeypatch.setattr(
-        warm_start_module,
+        forge_loop_command,
         "kb_warmstart",
         lambda **_kwargs: {
             "candidate": False,
@@ -1099,7 +1095,7 @@ def test_resume_reuses_persisted_framework_without_inference(
         raise AssertionError("resume must not infer framework")
 
     monkeypatch.setattr(
-        "kernelforge.workflows.forge_loop.campaign.campaign_config.infer_source_owner_framework",
+        "kernelforge.loop.campaign_config.infer_source_owner_framework",
         fail_inference,
     )
     result = CliRunner().invoke(
@@ -1784,8 +1780,8 @@ def test_fresh_campaign_captures_post_prep_driver_digest_and_base(tmp_path, monk
             audit_dir="",
         )
 
-    monkeypatch.setattr("kernelforge.workflows.forge_loop.preparation.task_preparer.preflight_task", fake_preflight)
-    monkeypatch.setattr("kernelforge.workflows.forge_loop.preparation.task_preparer.prepare_task_sync", fake_prepare)
+    monkeypatch.setattr("kernelforge.loop.task_preparer.preflight_task", fake_preflight)
+    monkeypatch.setattr("kernelforge.loop.task_preparer.prepare_task_sync", fake_prepare)
 
     result = CliRunner().invoke(
         main,

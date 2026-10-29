@@ -22,7 +22,7 @@ from hyperloom.orchestrator.prompts.prompt_builder import (
     SessionContext,
 )
 from hyperloom.inference_optimizer.session.paths import asset_system_prompts_dir
-from hyperloom.orchestrator.kernel import patch_jit_cache, patch_rebuild
+from hyperloom.orchestrator.kernel import apply_kernel_patch as akp
 
 
 @pytest.fixture(autouse=True)
@@ -653,7 +653,7 @@ def test_detect_strategy_accepts_dist_packages_vllm_py() -> None:
     target = Path(
         "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py",
     )
-    strat = patch_rebuild._detect_strategy(target)
+    strat = akp._detect_strategy(target)
     assert strat["compiled"] is False
 
 
@@ -670,22 +670,20 @@ _AITER_META_CPP_ITFS_CU = Path("/usr/local/lib/python3.12/dist-packages/aiter_me
 
 def test_target_is_in_aiter_csrc_matches_aiter_meta() -> None:
     # split-wheel layout must be recognised as an aiter csrc source
-    assert patch_jit_cache._target_is_in_aiter_csrc(_AITER_META_CU) is True
+    assert akp._target_is_in_aiter_csrc(_AITER_META_CU) is True
     # classic layout still recognised
-    assert patch_jit_cache._target_is_in_aiter_csrc(Path("/sgl-workspace/aiter/csrc/kernels/quant_kernels.cu")) is True
+    assert akp._target_is_in_aiter_csrc(Path("/sgl-workspace/aiter/csrc/kernels/quant_kernels.cu")) is True
     # unrelated source stays out
     assert (
-        patch_jit_cache._target_is_in_aiter_csrc(
-            Path("/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py")
-        )
+        akp._target_is_in_aiter_csrc(Path("/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py"))
         is False
     )
 
 
 def test_target_is_in_aiter_cpp_itfs_matches_aiter_meta() -> None:
-    assert patch_jit_cache._target_is_in_aiter_cpp_itfs(_AITER_META_CPP_ITFS_CU) is True
+    assert akp._target_is_in_aiter_cpp_itfs(_AITER_META_CPP_ITFS_CU) is True
     # a non-cpp_itfs aiter_meta source is csrc but NOT cpp_itfs
-    assert patch_jit_cache._target_is_in_aiter_cpp_itfs(_AITER_META_CU) is False
+    assert akp._target_is_in_aiter_cpp_itfs(_AITER_META_CU) is False
 
 
 def test_invalidate_aiter_jit_build_runs_for_aiter_meta_target(tmp_path) -> None:
@@ -694,7 +692,7 @@ def test_invalidate_aiter_jit_build_runs_for_aiter_meta_target(tmp_path) -> None
     (jit_build / "module_aiter_core.so").write_bytes(b"stale")
     backup_dir = tmp_path / "backup"
 
-    res = patch_jit_cache._invalidate_aiter_jit_build(
+    res = akp._invalidate_aiter_jit_build(
         _AITER_META_CU,
         backup_dir,
         jit_build_dir=jit_build,
@@ -714,14 +712,14 @@ def test_invalidate_aiter_jit_build_ignores_orphaned_prior_backup(
     (jit_build / "first.so").write_bytes(b"first")
     backup_dir = tmp_path / "backup"
 
-    first = patch_jit_cache._invalidate_aiter_jit_build(
+    first = akp._invalidate_aiter_jit_build(
         _AITER_META_CU,
         backup_dir,
         jit_build_dir=jit_build,
     )
     jit_build.mkdir(parents=True)
     (jit_build / "second.so").write_bytes(b"second")
-    second = patch_jit_cache._invalidate_aiter_jit_build(
+    second = akp._invalidate_aiter_jit_build(
         _AITER_META_CU,
         backup_dir,
         jit_build_dir=jit_build,

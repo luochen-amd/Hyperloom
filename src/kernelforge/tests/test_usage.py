@@ -4,9 +4,12 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
-from kernelforge.workflows.forge_loop.campaign.schema import ExperimentSubject
-from kernelforge.workflows.forge_loop.campaign.experiment import ExperimentTracker
-from kernelforge.agent_backends.usage import UsageAccumulator, combine_usage_totals
+from kernelforge.tracker import (
+    ExperimentSubject,
+    ExperimentTracker,
+    UsageAccumulator,
+    combine_usage_totals,
+)
 
 
 # Minimal stand-ins for the claude-agent-sdk message types.
@@ -230,7 +233,7 @@ def test_set_llm_usage_noop_on_empty():
 
 
 def test_experiment_llm_usage_round_trips():
-    from kernelforge.workflows.forge_loop.campaign.schema import Experiment
+    from kernelforge.tracker import Experiment
 
     exp = Experiment(experiment_id="x", llm_usage={"input_tokens": 9, "calls": 1})
     d = exp.to_dict()

@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
 
 from hyperloom.common.env import env_bool
+
+log = logging.getLogger(__name__)
 
 
 async def _run_quantization_prelude(args: argparse.Namespace) -> None:

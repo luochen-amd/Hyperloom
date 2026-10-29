@@ -14,6 +14,7 @@ from hyperloom.common.env_safety import is_secret_shaped_env_name, redact_secret
 from hyperloom.common.io import WriteOptions, atomic_write_text
 from hyperloom.common.kernel_source_contract import SOURCE_RESOLUTION_FILENAME
 from hyperloom.inference_optimizer.roofline_snapshot import extract_workload_summary
+from hyperloom.inference_optimizer.session.session_paths import forge_handoff_dir
 from hyperloom.orchestrator.kernel.campaign_baseline import campaign_repositories
 from hyperloom.orchestrator.kernel.gemm_shape_coverage import parse_aiter_shape_lookups, traced_gemm_shapes
 from hyperloom.orchestrator.measurement.runtime_findings import (
@@ -21,11 +22,10 @@ from hyperloom.orchestrator.measurement.runtime_findings import (
     load_runtime_findings,
     render_runtime_findings,
 )
-from kernelforge.workflows.rewrite_controller import (
-    SERVING_CONTEXT_FILENAME,
-    TRACE_EVIDENCE_FILENAME,
-    WORKLOAD_FILENAME,
-)
+
+WORKLOAD_FILENAME = "workload.md"
+SERVING_CONTEXT_FILENAME = "serving-context.md"
+TRACE_EVIDENCE_FILENAME = "trace-evidence.md"
 
 
 def _display(value: Any) -> str:
@@ -232,13 +232,19 @@ def _tuned_miss_lines(candidates_path: str, profiled: Mapping[str, Any]) -> list
 
 
 def write_forge_handoff(
+    session_dir: Path,
     state: Any,
     *,
-    handoff_dir: Path,
     env_spec: Mapping[str, Any] | None = None,
+    handoff_dir: Path | None = None,
     baselines: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Atomically write one Forge handoff into ``handoff_dir`` and return it."""
+    """Atomically write one Forge handoff and return its directory."""
+    if handoff_dir is None:
+        handoff_dir = forge_handoff_dir(
+            Path(session_dir),
+            int(getattr(state, "macro_cycle", 0) or 0),
+        )
     handoff_dir = Path(handoff_dir)
     documents = {
         WORKLOAD_FILENAME: build_workload_md(state),
@@ -255,6 +261,9 @@ def write_forge_handoff(
 
 
 __all__ = [
+    "SERVING_CONTEXT_FILENAME",
+    "TRACE_EVIDENCE_FILENAME",
+    "WORKLOAD_FILENAME",
     "build_serving_context_md",
     "build_trace_evidence_md",
     "build_workload_md",

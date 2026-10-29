@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from kernelforge.workflows.gemm_tune import evidence as ev
+from kernelforge.gemm_tune import evidence as ev
 
 _TUPLE = (
     "('gfx950', 256, {tok}, 6144, 384, 128, 4, <ActivationType.Swiglu: 2>, "
@@ -125,20 +125,16 @@ class TestWhatItUnblocks:
 
     @staticmethod
     def _select(report):
-        from kernelforge.workflows.gemm_tune.model_analyzer import ModelProfile
-        from kernelforge.workflows.gemm_tune.router import RoutingEvidence, RoutingTarget, select_tuners
+        from kernelforge.gemm_tune.model_analyzer import ModelProfile
+        from kernelforge.gemm_tune.router import select_tuners
 
         specs = select_tuners(
             ModelProfile(model_path="/fake", architecture="LlamaForCausalLM"),
-            RoutingTarget(
-                framework="sglang",
-                precision="bf16",
-                quant_type="none",
-                gpu_type="mi355x",
-            ),
-            RoutingEvidence(
-                demand_report=report,
-            ),
+            framework="sglang",
+            precision="bf16",
+            quant_type="none",
+            gpu_type="mi355x",
+            demand_report=report,
         )
         return [s.name for s in specs if not s.skip_reason]
 
@@ -146,7 +142,7 @@ class TestWhatItUnblocks:
         # The demand branch adds a tuner the framework branch left out. Before
         # this, no demand ever named fmoe_ck, so that branch could not reach it
         # however many times the runtime had missed its table.
-        from kernelforge.workflows.gemm_tune.router import DEMAND_MIN_MISSES
+        from kernelforge.gemm_tune.router import DEMAND_MIN_MISSES
 
         report = _log(*[_MISS.format(tok=16)] * DEMAND_MIN_MISSES)
         assert "fmoe_ck" in self._select(report)
@@ -156,7 +152,7 @@ class TestWhatItUnblocks:
         # for about fifteen minutes. A run that missed the table a few times is
         # not evidence enough to spend that, and the floor is the same one
         # tier3's gate applies to the same demand report.
-        from kernelforge.workflows.gemm_tune.router import DEMAND_MIN_MISSES
+        from kernelforge.gemm_tune.router import DEMAND_MIN_MISSES
 
         report = _log(*[_MISS.format(tok=16)] * (DEMAND_MIN_MISSES - 1))
         assert _fmoe(report) is not None, "the demand is still recorded"

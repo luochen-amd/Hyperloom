@@ -16,8 +16,7 @@ from kernelforge.agent_backends.base import (
 )
 from kernelforge.agent_backends.codex import resolve_codex_gateway
 from kernelforge.config import Config
-from kernelforge.workflows.forge_loop.roles.supervisor import (
-    SupervisorBackendFailure,
+from kernelforge.orchestrator.supervisor import (
     make_supervisor_fn,
 )
 
@@ -133,11 +132,11 @@ def test_provider_overrides_forwards_every_header(monkeypatch):
     assert not any("openai" in o for o in overrides)
 
 
-def test_supervisor_backend_initialization_failure_reaches_the_runner(
+def test_supervisor_backend_initialization_is_best_effort(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """Loop setup never builds the backend; the first review's failure reaches the runner's review boundary."""
+    """Return an empty reply instead of failing loop setup without a provider."""
     calls = 0
 
     def unavailable_factory(runtime, **_kwargs):
@@ -165,14 +164,14 @@ def test_supervisor_backend_initialization_failure_reaches_the_runner(
     )
 
     assert calls == 0
-    with pytest.raises(AgentProviderUnavailableError, match="^codex unavailable; fallback claude unavailable$"):
-        asyncio.run(
-            supervisor_fn(
-                digest="iteration stalled",
-                reason="plateau",
-                workspace=str(tmp_path),
-            )
+    reply = asyncio.run(
+        supervisor_fn(
+            digest="iteration stalled",
+            reason="plateau",
+            workspace=str(tmp_path),
         )
+    )
+    assert reply == ""
     assert calls == 1
     assert getattr(supervisor_fn, "backend_name") == "codex"
 
@@ -213,22 +212,19 @@ def test_supervisor_api_failure_is_not_parsed_or_repaired(
         )
     )
 
-    with pytest.raises(SupervisorBackendFailure, match="^gateway unavailable$"):
-        asyncio.run(
-            supervisor_fn(
-                digest="iteration stalled",
-                reason="plateau",
-                workspace=str(tmp_path),
-                iteration=4,
-            )
+    reply = asyncio.run(
+        supervisor_fn(
+            digest="iteration stalled",
+            reason="plateau",
+            workspace=str(tmp_path),
+            iteration=4,
         )
+    )
 
+    assert reply == ""
     assert calls == 1
-    supervisor_dir = tmp_path / "forge_experiments" / "supervisor"
-    record = (supervisor_dir / "intervention_iter_004.md").read_text(encoding="utf-8")
-    assert "(failed — SupervisorBackendFailure: gateway unavailable)" in record
-    assert "SDK error text" not in record
-    assert not (supervisor_dir / "latest.md").exists()
+    persisted = (tmp_path / "forge_experiments" / "supervisor" / "intervention_iter_004.md").read_text()
+    assert "SDK error text is not a Supervisor Ruling" not in persisted
 
 
 def test_supervisor_provider_switch_clears_backend_specific_runtime(

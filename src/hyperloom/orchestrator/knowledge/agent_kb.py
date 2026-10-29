@@ -9,7 +9,6 @@ import hashlib
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,12 @@ from .remote_recipe._vendor.kb_store_client import (
     KBStoreError,
     KnowledgeSections,
 )
-from .remote_recipe.models import CONFIG_SECTION, KERNEL_SECTION, PATCH_SECTION
+from .remote_recipe.models import (
+    CONFIG_SECTION,
+    KERNEL_SECTION,
+    PATCH_SECTION,
+    RECIPE_SECTIONS,
+)
 from .remote_recipe.sanitize import HOST_ORIGIN_KEY
 
 log = logging.getLogger(__name__)
@@ -109,8 +113,9 @@ class DraftArtifactSink:
         self._sources[source_key] = ref
         return ref
 
-    def write(self, text: str, *, rel: str) -> str:
+    def write(self, text: str, *, rel: str, kind: str) -> str:
         """Stage a document the builder synthesised rather than found on disk."""
+        del kind  # the ref already carries the column and kind
         self._members[rel] = text.encode("utf-8")
         return rel
 
@@ -231,17 +236,6 @@ class ConfigKB(_ColumnKB):
         )
 
 
-@dataclass(frozen=True)
-class OverlayProvenance:
-    """How one patch-column overlay was captured, as its provenance row records it."""
-
-    base_sha: str = ""
-    complete: bool = True
-    artifacts_outside_root: int = 0
-    realized: bool = True
-    host_origin: Mapping[str, Any] | None = None
-
-
 class PatchKB(_ColumnKB):
     """Source overlays in replay order plus their source-layer snapshots."""
 
@@ -316,7 +310,16 @@ class PatchKB(_ColumnKB):
             return []
         return [ref for ref, _content in members]
 
-    def stage_provenance(self, stack_index: int, provenance: OverlayProvenance) -> bool:
+    def stage_provenance(
+        self,
+        *,
+        stack_index: int,
+        base_sha: str = "",
+        complete: bool = True,
+        artifacts_outside_root: int = 0,
+        realized: bool = True,
+        host_origin: Mapping[str, Any] | None = None,
+    ) -> bool:
         """Record how the overlay at ``stack_index`` was captured."""
         if self._sections is None:
             return False
@@ -326,12 +329,12 @@ class PatchKB(_ColumnKB):
             return False
         row = {
             "stack_index": index,
-            "base_sha": str(provenance.base_sha or ""),
-            "complete": bool(provenance.complete),
-            "artifacts_outside_root": max(0, int(provenance.artifacts_outside_root or 0)),
-            "realized": bool(provenance.realized),
+            "base_sha": str(base_sha or ""),
+            "complete": bool(complete),
+            "artifacts_outside_root": max(0, int(artifacts_outside_root or 0)),
+            "realized": bool(realized),
         }
-        if origin := _host_origin(provenance.host_origin):
+        if origin := _host_origin(host_origin):
             row[HOST_ORIGIN_KEY] = origin
         document, _ = self._staged()
         rows = [
@@ -456,8 +459,12 @@ def _stack_index(value: Any) -> int:
 
 
 __all__ = [
+    "CONFIG_SECTION",
+    "KERNEL_SECTION",
+    "PATCH_SECTION",
+    "RECIPE_SECTIONS",
     "ConfigKB",
+    "DraftArtifactSink",
     "KernelAgentKB",
-    "OverlayProvenance",
     "PatchKB",
 ]

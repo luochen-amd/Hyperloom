@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/AMD-AGI/Hyperloom/actions/workflows/tests-coverage.yml/badge.svg)](https://github.com/AMD-AGI/Hyperloom/actions/workflows/tests-coverage.yml)
 [![Lint](https://github.com/AMD-AGI/Hyperloom/actions/workflows/lint.yml/badge.svg)](https://github.com/AMD-AGI/Hyperloom/actions/workflows/lint.yml)
-[![Version](https://img.shields.io/badge/version-1.1.5-blue)](https://github.com/AMD-AGI/Hyperloom/blob/main/pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.1.4-blue)](https://github.com/AMD-AGI/Hyperloom/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/AMD-AGI/Hyperloom/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/AMD-AGI/Hyperloom/blob/main/pyproject.toml)
 
@@ -93,7 +93,7 @@ automatic supervision or recovery loop:
 
 | Role | When it runs | How it keeps the run on-goal |
 |------|----------------|------------------------------|
-| **Orchestration** | Every tick; in KERNEL_AGENT only when kernel progress changes, or after 15 minutes without a turn | Continuous planner; mission and progress are re-seeded from the state file, not from the transcript |
+| **Orchestration** | Every tick | Continuous planner; mission and progress are re-seeded from the state file, not from the transcript |
 | **Critic** | Every keep-or-revert | Rules on whether a change served the mission; the learning record is written from that verdict |
 | **Specialist** | Authoring only | Ephemeral. Returns a reviewed diff, not a decision |
 

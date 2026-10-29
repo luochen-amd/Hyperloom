@@ -47,7 +47,6 @@ __all__ = [
     "is_rocr_level",
     "mask_tokens",
     "parse_device_list",
-    "rocm_smi_gpu_count",
 ]
 
 #: ROCr-level masks: these slice the device set and renumber it ``0..N-1``.
@@ -196,28 +195,6 @@ def hip_mask_within_rocr(env: Any) -> str | None:
     return ",".join(str(index) for index in range(len(visible)))
 
 
-def rocm_smi_gpu_count() -> int:
-    """Distinct GPU indices ``rocm-smi --showid`` lists (it prints several ``GPU[<index>]`` lines per device).
-
-    Raises:
-        subprocess.CalledProcessError: ``rocm-smi`` exited non-zero.
-        OSError, subprocess.TimeoutExpired: ``rocm-smi`` could not run.
-    """
-    import subprocess
-
-    proc = subprocess.run(["rocm-smi", "--showid"], capture_output=True, text=True, timeout=5)
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, "rocm-smi")
-    indices: set[str] = set()
-    for line in (proc.stdout or "").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("GPU["):
-            idx, _, _ = stripped[4:].partition("]")
-            if idx:
-                indices.add(idx)
-    return len(indices)
-
-
 def detect_gpu_count() -> int:
     """Best-effort visible-GPU count: env masks first, then ``rocm-smi``; 0 when nothing can be probed.
 
@@ -235,14 +212,35 @@ def detect_gpu_count() -> int:
     """
     for env_name in COUNTING_VISIBLE_DEVICE_VARS:
         raw = os.environ.get(env_name)
-        if raw is not None:
-            return len(effective_mask_tokens(raw))
+        if raw is None:
+            continue
+        raw = raw.strip()
+        if raw == "":
+            return 0
+        ids = [tok for tok in raw.split(",") if tok.strip() != ""]
+        if ids:
+            return len(ids)
     import subprocess
 
     try:
-        return rocm_smi_gpu_count()
-    except (OSError, subprocess.SubprocessError):
+        proc = subprocess.run(
+            ["rocm-smi", "--showid"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, ValueError, subprocess.TimeoutExpired):
         return 0
+    if proc.returncode != 0:
+        return 0
+    indices: set[str] = set()
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("GPU["):
+            idx, _, _ = stripped[4:].partition("]")
+            if idx:
+                indices.add(idx)
+    return len(indices)
 
 
 def parse_device_list(raw: Any) -> list[int]:

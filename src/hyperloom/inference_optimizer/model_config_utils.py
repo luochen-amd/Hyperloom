@@ -14,10 +14,9 @@ from typing import Any
 
 from hyperloom.common.checkpoint_quant import QUARK_LAYER_CONFIG_KEYS, checkpoint_format
 from hyperloom.common.coerce import optional_positive_int, to_int
+
+# Single source of truth for --model (path OR HF repo id) -> local dir.
 from hyperloom.common.model_paths import resolve_local_model_dir
-
-
-log = logging.getLogger(__name__)
 
 
 _MAXPOS_CONFIG_KEYS = (
@@ -37,7 +36,7 @@ _NATIVE_MOE_RUNNER_QUANT_METHODS = frozenset({"quark"})
 _MX_FP4_GROUP_SIZE = 32
 
 
-def load_model_config_dict(model_path: str) -> dict | None:
+def _load_model_config_dict(model_path: str) -> dict | None:
     """Best-effort parse of ``<model_path>/config.json`` into a dict; returns ``None`` on any failure."""
     if not model_path:
         return None
@@ -67,21 +66,22 @@ def load_model_config_dict(model_path: str) -> dict | None:
     return data
 
 
-def config_scopes(data: dict) -> list[dict]:
-    """Return the [top-level, text_config?] scopes a config.json is inspected over."""
-    scopes = [data]
-    nested = data.get("text_config")
-    if isinstance(nested, dict):
-        scopes.append(nested)
-    return scopes
-
-
 def _load_model_max_position_embeddings(model_path: str) -> int | None:
     """Best-effort read of max sequence length from config.json (first positive among known keys, incl. nested ``text_config``), or None."""
-    data = load_model_config_dict(model_path)
-    if data is None:
+    if not model_path:
         return None
-    for cfg in config_scopes(data):
+    cfg_path = (resolve_local_model_dir(model_path) or Path(model_path)) / "config.json"
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    candidates = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for cfg in candidates:
         for key in _MAXPOS_CONFIG_KEYS:
             val = cfg.get(key)
             if isinstance(val, bool):
@@ -93,10 +93,13 @@ def _load_model_max_position_embeddings(model_path: str) -> int | None:
 
 def _model_has_dual_chunk_attention(model_path: str) -> bool:
     """Best-effort detect a ``dual_chunk_attention_config`` in config.json."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return False
-    return any(cfg.get("dual_chunk_attention_config") for cfg in config_scopes(data))
+    if data.get("dual_chunk_attention_config"):
+        return True
+    nested = data.get("text_config")
+    return isinstance(nested, dict) and bool(nested.get("dual_chunk_attention_config"))
 
 
 def _is_quark_mx_fp4_entry(entry: Any) -> bool:
@@ -121,10 +124,14 @@ def _model_moe_runner_requires_aiter(model_path: str) -> bool:
     """Best-effort detect a MoE quant scheme that only the aiter runner serves."""
     if not model_path:
         return False
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return False
-    for cfg in config_scopes(data):
+    candidates = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for cfg in candidates:
         qc = cfg.get("quantization_config")
         if not isinstance(qc, dict):
             continue
@@ -142,11 +149,15 @@ def _model_moe_runner_requires_aiter(model_path: str) -> bool:
 
 def _model_is_moe(model_path: str) -> bool:
     """Best-effort detect a Mixture-of-Experts model from config.json."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return False
+    candidates = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested)
     expert_keys = ("num_experts", "num_local_experts", "n_routed_experts")
-    for cfg in config_scopes(data):
+    for cfg in candidates:
         for key in expert_keys:
             val = cfg.get(key)
             if isinstance(val, bool):
@@ -166,10 +177,14 @@ def model_supports_aiter_ck_fused_moe(model_path: str, tp: int) -> bool:
     """Whether aiter's CK fused-MoE can serve this checkpoint at this TP."""
     if not _model_is_moe(model_path):
         return True
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return True
-    for cfg in config_scopes(data):
+    candidates = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for cfg in candidates:
         size = cfg.get("moe_intermediate_size")
         if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
             continue
@@ -182,10 +197,14 @@ def _model_declared_quant_method(model_path: str) -> str:
     """Return the checkpoint's declared ``quant_method``, lowercased."""
     if not model_path:
         return ""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return ""
-    for cfg in config_scopes(data):
+    candidates = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for cfg in candidates:
         qc = cfg.get("quantization_config")
         if isinstance(qc, dict):
             method = str(qc.get("quant_method") or "").strip().lower()
@@ -221,9 +240,18 @@ def _path_looks_like_gemma2(model_path: str) -> bool:
     return _GEMMA2_PATH_RE.search(Path(model_path).name.lower()) is not None
 
 
+def _config_gemma2_scopes(data: dict) -> list[dict]:
+    """Return [top-level, text_config?] scopes for Gemma2 inspection."""
+    scopes = [data]
+    nested = data.get("text_config")
+    if isinstance(nested, dict):
+        scopes.append(nested)
+    return scopes
+
+
 def _config_is_gemma2(data: dict) -> bool:
     """True when a parsed config dict declares Gemma2 (top level or text_config)."""
-    for cfg in config_scopes(data):
+    for cfg in _config_gemma2_scopes(data):
         if str(cfg.get("model_type") or "").strip().lower() == GEMMA2_MODEL_TYPE:
             return True
         if any(a.lower() in GEMMA2_ARCHITECTURES for a in _config_architectures(cfg)):
@@ -233,7 +261,7 @@ def _config_is_gemma2(data: dict) -> bool:
 
 def _config_has_model_identity(data: dict) -> bool:
     """True when the config carries any recognizable model_type/architectures."""
-    for cfg in config_scopes(data):
+    for cfg in _config_gemma2_scopes(data):
         if str(cfg.get("model_type") or "").strip():
             return True
         if _config_architectures(cfg):
@@ -300,7 +328,7 @@ def _fp8_weight_scale_is_per_channel(model_path: str) -> bool | None:
 
 def _fp8_is_per_channel_per_token(model_path: str) -> bool:
     """True when a serialized FP8 checkpoint uses per-channel weight + per-token (dynamic) activation."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if not isinstance(data, dict):
         return False
     qc = data.get("quantization_config")
@@ -524,7 +552,7 @@ def _moe_shape(cfg: dict) -> dict:
 
 def summarize_model_config(model_path: str) -> dict:
     """Best-effort structured summary of a model's ``config.json`` ({} on failure)."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is None:
         return {}
     cfg = _merge_config_scopes(data)
@@ -564,26 +592,20 @@ def summarize_model_config(model_path: str) -> dict:
     return out
 
 
-def model_is_gemma2(model_path: str) -> bool:
+def _model_is_gemma2(model_path: str) -> bool:
     """Best-effort detect a Gemma2 model from config.json (top level or text_config)."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if data is not None:
         if _config_is_gemma2(data):
             return True
         if _config_has_model_identity(data):
             return False
-    matched = _path_looks_like_gemma2(model_path)
-    if matched and data is None:
-        log.warning(
-            "Gemma2 detected via path heuristic (no readable config.json at %r); shape-discovery skip may be imprecise.",
-            model_path,
-        )
-    return matched
+    return _path_looks_like_gemma2(model_path)
 
 
 def _sparse_kv_block_size(model_path: str) -> int | None:
     """Return the KV-cache block size a sparse-attention model requires, or None."""
-    data = load_model_config_dict(model_path)
+    data = _load_model_config_dict(model_path)
     if not isinstance(data, dict):
         return None
     sparse = _merge_config_scopes(data).get("sparse_attention_config")
@@ -602,7 +624,7 @@ _NSA_KEYWORDS = ("nsa", "native sparse attention", "glm-5", "glm5")
 def infer_model_class(model_path: str) -> str:
     """Infer a deterministic model_class from local model metadata."""
     raw_path = model_path.strip()
-    config = load_model_config_dict(raw_path) or {}
+    config = _load_model_config_dict(raw_path) or {}
     # A multimodal checkpoint keeps the language model one level down, so the expert counts and the LM architecture
     # live there rather than at the top; a VL wrapper would otherwise classify as dense.
     scopes = [config, *(config[k] for k in _TEXT_SCOPE_KEYS if isinstance(config.get(k), dict))]

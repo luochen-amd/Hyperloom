@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from kernelforge.workflows.gemm_tune import script_discovery as sd
+from kernelforge.gemm_tune import script_discovery as sd
 
 
 @pytest.fixture(autouse=True)
@@ -84,3 +84,11 @@ class TestInventory:
 
     def test_missing_csrc_is_empty_not_an_error(self, tmp_path):
         assert sd.inventory(tmp_path / "nope") == {}
+
+    def test_unwired_scripts_excludes_the_ones_we_drive(self, tmp_path):
+        _make(tmp_path, "ck_gemm_a8w8/gemm_a8w8_tune.py")  # wired
+        _make(tmp_path, "batched/batched_gemm_a8w8_tune.py")  # Tier-1 stock
+        _make(tmp_path, "opus/opus_gemm_tune.py")  # Tier-1 stock
+        unwired = sd.unwired_scripts(tmp_path)
+        assert set(unwired) == {"batched_gemm_a8w8_tune", "opus_gemm_tune"}
+        assert "gemm_a8w8_tune" not in unwired

@@ -32,7 +32,13 @@ _ARCH_LOG = "ValueError: Model architecture 'Glm5ForCausalLM' is not supported"
 
 
 def _req() -> EnablementRequest:
-    return EnablementRequest(framework="sglang", model="zai-org/GLM-5", repo_url=_SGLANG)
+    return EnablementRequest.from_dict(
+        {
+            "framework": "sglang",
+            "model": "zai-org/GLM-5",
+            "repo_url": "https://github.com/sgl-project/sglang.git",
+        }
+    )
 
 
 def _sig(log: str = "") -> FailureSignature:

@@ -10,10 +10,9 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from kernelforge.workflows.gemm_tune import pipeline as cli_mod
-from kernelforge.cli.gemm_tune_command import gemm_tune
-from kernelforge.workflows.gemm_tune.dense_shapes import MGrid
-from kernelforge.workflows.gemm_tune.tuners.base import TuneResult
+from kernelforge.gemm_tune import cli as cli_mod
+from kernelforge.gemm_tune.cli import gemm_tune
+from kernelforge.gemm_tune.tuners.base import TuneResult
 
 
 def _model_dir(tmp_path):
@@ -25,7 +24,7 @@ def _model_dir(tmp_path):
 
 def _stub_preflight(monkeypatch, *, soft=None, hard=None):
     monkeypatch.setattr(
-        "kernelforge.workflows.gemm_tune.aiter_preflight.collect",
+        "kernelforge.gemm_tune.aiter_preflight.collect",
         lambda: {"soft": soft or [], "hard": hard or [], "aligned": False},
     )
 
@@ -122,7 +121,7 @@ def test_aiter_preflight_defect_propagates(tmp_path, monkeypatch):
     def _boom():
         raise RuntimeError("preflight defect")
 
-    monkeypatch.setattr("kernelforge.workflows.gemm_tune.aiter_preflight.collect", _boom)
+    monkeypatch.setattr("kernelforge.gemm_tune.aiter_preflight.collect", _boom)
 
     with pytest.raises(RuntimeError, match="^preflight defect$"):
         cli_mod._aiter_preflight_problems(tmp_path)
@@ -134,7 +133,7 @@ def test_demand_report_loader_defect_propagates(monkeypatch):
     def _boom(_path):
         raise RuntimeError("loader defect")
 
-    monkeypatch.setattr("kernelforge.workflows.gemm_tune.evidence.load_demand", _boom)
+    monkeypatch.setattr("kernelforge.gemm_tune.evidence.load_demand", _boom)
 
     with pytest.raises(RuntimeError, match="^loader defect$"):
         cli_mod._load_demand_report("demand.json")
@@ -147,7 +146,7 @@ def test_aiter_preflight_returns_hard_problems(tmp_path, monkeypatch):
 
 
 def test_cli_resolves_auto_once_and_records_effective_gpu(tmp_path, monkeypatch):
-    from kernelforge.workflows.gemm_tune import router
+    from kernelforge.gemm_tune import router
 
     _stub_preflight(monkeypatch)
     model = _model_dir(tmp_path)
@@ -158,7 +157,7 @@ def test_cli_resolves_auto_once_and_records_effective_gpu(tmp_path, monkeypatch)
         calls.append(True)
         return "gfx942"
 
-    monkeypatch.setattr(router, "detect_arch", detect)
+    monkeypatch.setattr(router, "_detect_local_gfx_arch", detect)
     result = CliRunner().invoke(
         gemm_tune,
         [
@@ -187,9 +186,9 @@ def test_cli_resolves_auto_once_and_records_effective_gpu(tmp_path, monkeypatch)
 
 
 def test_cli_auto_detection_failure_aborts_before_model_or_tuning(tmp_path, monkeypatch):
-    from kernelforge.workflows.gemm_tune import model_analyzer, router
+    from kernelforge.gemm_tune import model_analyzer, router
 
-    monkeypatch.setattr(router, "detect_arch", lambda: "")
+    monkeypatch.setattr(router, "_detect_local_gfx_arch", lambda: "")
     monkeypatch.setattr(
         model_analyzer,
         "analyze_model",
@@ -221,7 +220,7 @@ def test_cli_auto_detection_failure_aborts_before_model_or_tuning(tmp_path, monk
 
 
 def test_plan_routes_the_same_inputs_as_run_and_run_builds_the_tuner_context(tmp_path, monkeypatch):
-    from kernelforge.workflows.gemm_tune import router as router_mod
+    from kernelforge.gemm_tune import router as router_mod
 
     _stub_preflight(monkeypatch)
     model = _model_dir(tmp_path)
@@ -244,8 +243,8 @@ def test_plan_routes_the_same_inputs_as_run_and_run_builds_the_tuner_context(tmp
     selection_calls = []
     contexts = []
 
-    def select_tuners(_profile, target, evidence):
-        selection_calls.append(vars(target) | vars(evidence))
+    def select_tuners(_profile, **kwargs):
+        selection_calls.append(kwargs)
         return [router_mod.TunerSpec("a8w8_blockscale", skip_reason="not supported in contract test")]
 
     def execute_tuners(_specs, ctx, _deadline):
@@ -290,8 +289,6 @@ def test_plan_routes_the_same_inputs_as_run_and_run_builds_the_tuner_context(tmp
             "3",
             "--min-improvement-pct",
             "1.5",
-            "--m-grid",
-            "exact",
             "--skip-gpu-check",
             "--output-dir",
             str(output),
@@ -314,7 +311,6 @@ def test_plan_routes_the_same_inputs_as_run_and_run_builds_the_tuner_context(tmp
 
     (ctx,) = contexts
     assert (ctx.iters, ctx.warmup, ctx.min_improvement_pct) == (7, 3, 1.5)
-    assert ctx.m_grid is MGrid.EXACT
     assert {
         "untuned_csv": ctx.untuned_csv,
         "moe_untuned_csv": ctx.moe_untuned_csv,
@@ -347,8 +343,8 @@ def _run_with_ceiling(tmp_path, monkeypatch, *, routed: list, extra: list[str]) 
             executed.append(self.name)
             return TuneResult(tuner_name=self.name, status="no_improvement")
 
-    from kernelforge.workflows.gemm_tune import router as router_mod
-    from kernelforge.workflows.gemm_tune.router import TunerSpec
+    from kernelforge.gemm_tune import router as router_mod
+    from kernelforge.gemm_tune.router import TunerSpec
 
     def _spec(index, entry):
         name, skip_reason = entry if isinstance(entry, tuple) else (entry, None)

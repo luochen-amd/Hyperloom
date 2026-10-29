@@ -11,6 +11,10 @@ from typing import Mapping
 class AgentXPreflightError(RuntimeError):
     """An unusable MLPerf harness."""
 
+    def __init__(self, message: str, *, repairable: bool = False) -> None:
+        super().__init__(message)
+        self.repairable = repairable
+
 
 def _check_mlperf_framework(env: Mapping[str, str]) -> None:
     """Raise unless this framework can serve the agentic client.
@@ -28,11 +32,13 @@ def _check_mlperf_framework(env: Mapping[str, str]) -> None:
     if not framework_registry.is_supported(framework):
         raise AgentXPreflightError(
             f"HYPERLOOM_AGENTIC_BACKEND=mlperf: {framework!r} is not a registered framework "
-            f"(known: {', '.join(framework_registry.names())})."
+            f"(known: {', '.join(framework_registry.names())}).",
+            repairable=False,
         )
     if framework_registry.is_scriptable(framework):
         raise AgentXPreflightError(
-            f"HYPERLOOM_AGENTIC_BACKEND=mlperf drives an HTTP endpoint; refusing scriptable framework {framework!r}."
+            f"HYPERLOOM_AGENTIC_BACKEND=mlperf drives an HTTP endpoint; refusing scriptable framework {framework!r}.",
+            repairable=False,
         )
 
 
@@ -43,22 +49,31 @@ def check_mlperf_harness(env: Mapping[str, str]) -> None:
     if not script.is_file():
         raise AgentXPreflightError(
             f"HYPERLOOM_AGENTIC_BACKEND=mlperf but {script} is missing. "
-            "Mount mlperf-endpoints and set MLPERF_ENDPOINTS_DIR."
+            "Mount mlperf-endpoints and set MLPERF_ENDPOINTS_DIR.",
+            repairable=False,
         )
     dataset = str(env.get("AGENTIC_DATASET_PATH") or "").strip()
     if not dataset or not Path(dataset).exists():
         raise AgentXPreflightError(
             "HYPERLOOM_AGENTIC_BACKEND=mlperf requires AGENTIC_DATASET_PATH to "
-            f"point at agentic_combined_v6.jsonl (got {dataset!r})."
+            f"point at agentic_combined_v6.jsonl (got {dataset!r}).",
+            repairable=False,
         )
     tokenizer = str(env.get("MLPERF_TOKENIZER_DIR") or "").strip()
     if not tokenizer or not Path(tokenizer).is_dir():
         raise AgentXPreflightError(
-            f"HYPERLOOM_AGENTIC_BACKEND=mlperf requires MLPERF_TOKENIZER_DIR (got {tokenizer!r})."
+            f"HYPERLOOM_AGENTIC_BACKEND=mlperf requires MLPERF_TOKENIZER_DIR (got {tokenizer!r}).",
+            repairable=False,
         )
     if not shutil.which("inference-endpoint", path=env.get("PATH")) and not shutil.which("uv", path=env.get("PATH")):
-        raise AgentXPreflightError("HYPERLOOM_AGENTIC_BACKEND=mlperf needs inference-endpoint or uv on PATH.")
+        raise AgentXPreflightError(
+            "HYPERLOOM_AGENTIC_BACKEND=mlperf needs inference-endpoint or uv on PATH.",
+            repairable=False,
+        )
     _check_mlperf_framework(env)
     model = str(env.get("MODEL") or env.get("MODEL_PATH") or "").strip().lower()
     if model and "kimi" not in model:
-        raise AgentXPreflightError(f"HYPERLOOM_AGENTIC_BACKEND=mlperf only measures Kimi-K3; refusing model {model!r}.")
+        raise AgentXPreflightError(
+            f"HYPERLOOM_AGENTIC_BACKEND=mlperf only measures Kimi-K3; refusing model {model!r}.",
+            repairable=False,
+        )

@@ -25,17 +25,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from hyperloom.common.coerce import (
+from .event_fields import (
+    as_dict as _as_dict,
+    as_list as _as_list,
+    clip as _clip,
+    failure_row as _failure_row,
+    float_or_none as _float_or_none,
+    now_iso_seconds as _now,
     text_or_none as _text_or_none,
-    to_float as _float_or_none,
-    to_mapping as _as_dict,
-    to_list as _as_list,
 )
+from ..round_archive import ROLE_LAUNCH_CONFIG
 
-from .event_fields import clip as _clip, failure_row as _failure_row, now_iso_seconds as _now
 from .event_ids import event_id
 from .event_rows import rows_for_event, sort_rows, wire_rows
-from .event_sink import EventSink, bound_sink
+from .event_sink import EventSink, make_sink
 from .enablement_keep_pairing import (
     KEEP_REF_FIELD,
     VALIDATING_KEEP_FIELD,
@@ -86,14 +89,6 @@ SECTION_REVALIDATION = "enablement_revalidation"
 #: such a log dispatches nothing, so it would leave no other trace.
 SECTION_HUMAN_REVIEW = "enablement_human_review"
 
-#: The fields one event's rows are ordered by, per section.
-_ROW_ORDER: dict[str, tuple[str, ...]] = {
-    SECTION_ATTEMPT: ("attempt", "dispatched_at"),
-    SECTION_BUILD: ("recorded_at", "task_id"),
-    SECTION_REVALIDATION: ("generation",),
-    SECTION_HUMAN_REVIEW: ("recorded_at", "digest"),
-}
-
 #: The lane was opened by a baseline that could not launch at all.
 ORIGIN_BOOT = "boot"
 
@@ -132,7 +127,21 @@ def enablement_event_id() -> str:
     return event_id(EVENT_PHASE, EVENT_CYCLE, EVENT_COMPONENT)
 
 
-def _open(*, mode: str = "", origin: str = "") -> int | None:
+def _sink() -> EventSink | None:
+    """The sink rows are written through; ``None`` when no session is bound.
+
+    The rows themselves are written best-effort by the sink, so nothing below
+    guards its own writes: a spool that cannot be written drops the row there
+    and the lane carries on.
+    """
+    from ...session.session_binding import bound_session_or_none
+
+    if bound_session_or_none() is None:
+        return None
+    return make_sink(enablement_event_id(), producer=PRODUCER)
+
+
+def _open(*, mode: str = "", origin: str = "", start_time: str = "") -> int | None:
     """Put the lane on the timeline, once, however many callers ask.
 
     :func:`open_event` returns an earlier open's sequence rather than writing a
@@ -148,70 +157,64 @@ def _open(*, mode: str = "", origin: str = "") -> int | None:
     if shell:
         # Onto the fragment too: assembly rebuilds ``ext`` from fragments,
         # so a shell-only field dies at the first close.
-        sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+        sink = _sink()
         if sink is not None:
             sink.record(SECTION_EVENT, dict(shell))
     return open_event(
-        EventHeader(EVENT_TYPE, enablement_event_id(), EVENT_KIND, _now()),
+        EventHeader(EVENT_TYPE, enablement_event_id(), EVENT_KIND, start_time or _now()),
         event_section=SECTION_EVENT,
         producer=PRODUCER,
         ext=shell,
     )
 
 
-@dataclass(frozen=True)
-class LaneTrigger:
-    """The failure that opened the lane; the accuracy fields are eval-origin only."""
-
-    origin: str
-    mode: str
-    kind: str = ""
-    evidence: Any = ""
-    observed_accuracy: Any = None
-    accuracy_floor: Any = None
-    observed_task: Any = None
-    observed_metric: Any = None
-    eval_contract_fingerprint: Any = None
-    probe_config_path: Any = None
-
-    def block(self) -> dict[str, Any]:
-        """The ``trigger`` block this trigger persists as."""
-        return {
-            "kind": str(self.kind or ""),
-            "recorded_at": _now(),
-            "evidence_excerpt": _tail(self.evidence),
-            "observed_accuracy": _float_or_none(self.observed_accuracy),
-            "accuracy_floor": _float_or_none(self.accuracy_floor),
-            "observed_task": _text_or_none(self.observed_task),
-            "observed_metric": _text_or_none(self.observed_metric),
-            "eval_contract_fingerprint": _text_or_none(self.eval_contract_fingerprint),
-            "probe_config_path": _text_or_none(self.probe_config_path),
-        }
-
-
-def record_trigger(trigger: LaneTrigger) -> None:
+def record_trigger(
+    *,
+    origin: str,
+    mode: str,
+    kind: str = "",
+    evidence: Any = "",
+    observed_accuracy: Any = None,
+    accuracy_floor: Any = None,
+    observed_task: Any = None,
+    observed_metric: Any = None,
+    eval_contract_fingerprint: Any = None,
+    probe_config_path: Any = None,
+) -> None:
     """Open the lane and record what opened it. Never raises.
 
     The first call wins the ``trigger`` block: a lane reopened by a second
     failure is the same lane on the same gap, and letting the newest failure
     overwrite the oldest is how an eval-less re-baseline downgrades a measured
-    ``accuracy_below_floor`` to an empty ``accuracy_unavailable``.
+    ``accuracy_below_floor`` to an empty ``accuracy_unavailable``. The accuracy
+    fields are eval-origin only.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
-    _open(mode=trigger.mode, origin=trigger.origin)
+    _open(mode=mode, origin=origin)
     if _recorded_trigger():
         # Keyed rows deep-merge, so a second trigger would overwrite the
         # first field by field; mode and origin are already on the shell.
         return
+    trigger: dict[str, Any] = {
+        "kind": str(kind or ""),
+        "recorded_at": _now(),
+        "evidence_excerpt": _tail(evidence),
+        "observed_accuracy": _float_or_none(observed_accuracy),
+        "accuracy_floor": _float_or_none(accuracy_floor),
+        "observed_task": _text_or_none(observed_task),
+        "observed_metric": _text_or_none(observed_metric),
+        "eval_contract_fingerprint": _text_or_none(eval_contract_fingerprint),
+        "probe_config_path": _text_or_none(probe_config_path),
+    }
     sink.record(
         SECTION_EVENT,
         {
-            "mode": str(trigger.mode or ""),
-            "origin": str(trigger.origin or ""),
+            "mode": str(mode or ""),
+            "origin": str(origin or ""),
             # Under its own key so a later write cannot flatten it.
-            "trigger": trigger.block(),
+            "trigger": trigger,
         },
     )
 
@@ -248,7 +251,7 @@ def record_dispatch(dispatch: AuthoringDispatch) -> None:
     by every advance, and the classified kind only ever existed in the params
     this dispatch built.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open(mode=dispatch.mode, origin=dispatch.origin)
@@ -272,16 +275,18 @@ def record_archive(*, task_id: str, attempt: int, files: Sequence[Mapping[str, s
     Upserts onto the row the dispatch opened, so it wants the same
     ``(task_id, attempt)``.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open()
+    archived = _archived_files(files)
     sink.record(
         SECTION_ATTEMPT,
         {
             "attempt": int(attempt or 0),
             "task_id": str(task_id or ""),
-            "files": _archived_files(files),
+            "files": archived,
+            "accepted_config_path": _text_or_none(_archived_path(archived, ROLE_LAUNCH_CONFIG)),
         },
         row_type="attempt",
         natural_ids=_row_id(task_id, attempt),
@@ -343,7 +348,7 @@ def record_round(round_: AuthoringRound) -> None:
     What the archive took is :func:`record_archive`'s to write, not a field of
     the verdict.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open()
@@ -359,7 +364,7 @@ def record_human_review(*, digest: str, failure_kind: str, reason: str = "", sig
 
     Such a log dispatches nothing, so it leaves no round behind.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None or not str(digest or "").strip():
         return
     _open()
@@ -379,7 +384,7 @@ def record_human_review(*, digest: str, failure_kind: str, reason: str = "", sig
 
 def record_build(*, task_id: str, entry: Mapping[str, Any] | None = None, novelty_key: str = "") -> None:
     """Record one ``BuildResult.to_state()`` entry, keyed by ``task_id``."""
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None or not str(task_id or "").strip():
         return
     _open()
@@ -423,7 +428,7 @@ def record_revalidation(
     reason: str = "",
 ) -> None:
     """Record a revalidation window opening, keyed by ``generation``."""
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open()
@@ -437,49 +442,41 @@ def record_revalidation(
     _record_window(sink, row)
 
 
-@dataclass(frozen=True)
-class RevalidationOutcome:
-    """How one revalidation window closed on the baseline that measured it."""
-
-    generation: int
-    promoted: bool
-    task_id: str = ""
-    accuracy: Any = None
-    accuracy_floor: Any = None
-    error_class: str = ""
-    reason: str = ""
-
-    def row(self) -> dict[str, Any]:
-        """The window row fields this outcome closes."""
-        row: dict[str, Any] = {
-            "generation": int(self.generation or 0),
-            "closed_at": _now(),
-            "promoted": bool(self.promoted),
-            "verdict": VERDICT_PROMOTED if self.promoted else VERDICT_REJECTED,
-            "accuracy": _float_or_none(self.accuracy),
-            "accuracy_floor": _float_or_none(self.accuracy_floor),
-        }
-        if self.task_id:
-            row["task_id"] = str(self.task_id)
-        if self.error_class:
-            row["error_class"] = str(self.error_class)
-        if self.reason:
-            row["reason"] = str(self.reason)
-        return row
-
-
-def record_revalidation_outcome(outcome: RevalidationOutcome) -> None:
+def record_revalidation_outcome(
+    *,
+    generation: int,
+    promoted: bool,
+    task_id: str = "",
+    accuracy: Any = None,
+    accuracy_floor: Any = None,
+    error_class: str = "",
+    reason: str = "",
+) -> None:
     """Record how a revalidation window closed.
 
     ``error_class`` is set only when the baseline failed rather than measuring
     under the floor. A window that did not promote is ``rejected``; one the run
     stopped goes through :func:`record_revalidation_stopped`.
     """
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open()
-    _record_window(sink, outcome.row())
+    row: dict[str, Any] = {
+        "generation": int(generation or 0),
+        "closed_at": _now(),
+        "promoted": bool(promoted),
+        "verdict": VERDICT_PROMOTED if promoted else VERDICT_REJECTED,
+        "accuracy": _float_or_none(accuracy),
+        "accuracy_floor": _float_or_none(accuracy_floor),
+    }
+    if task_id:
+        row["task_id"] = str(task_id)
+    if error_class:
+        row["error_class"] = str(error_class)
+    if reason:
+        row["reason"] = str(reason)
+    _record_window(sink, row)
 
 
 def record_revalidation_stopped(*, generation: int, task_id: str = "", accuracy_floor: Any = None) -> None:
@@ -493,7 +490,7 @@ def record_revalidation_cleared(*, generation: int, task_id: str = "") -> None:
 
 
 def _record_window_end(generation: int, verdict: str, reason: str, task_id: str, accuracy_floor: Any) -> None:
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     _open()
@@ -540,7 +537,7 @@ def record_fault(
     rows = _event_rows()
     if not rows or any(_as_dict(row.get("result")) or _as_dict(row.get("failure")) for row in rows):
         return
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     sink.record(
@@ -618,7 +615,7 @@ def finish(terminal: LaneTerminal) -> None:
     """
     from .assembler import event_parts
 
-    sink = bound_sink(enablement_event_id(), producer=PRODUCER)
+    sink = _sink()
     if sink is None:
         return
     sequence = _open()
@@ -648,6 +645,8 @@ def finish(terminal: LaneTerminal) -> None:
         note_failure(section=SECTION_EVENT, error=exc, detail=f"closing enablement event {enablement_event_id()}")
 
 
+#: Every section the enablement event assembles from. Duplicated from the
+#: assembler so :func:`finish` can read its own parts without an import cycle.
 def assemble_enablement_ext(
     parts: Mapping[str, list[dict[str, Any]]],
     *,
@@ -659,20 +658,30 @@ def assemble_enablement_ext(
     leaves the caller's own reading standing.
     """
     header = _header(rows_for_event(parts.get(SECTION_EVENT) or [], event))
-    rows = {
-        section: wire_rows(sort_rows(rows_for_event(parts.get(section) or [], event), keys=keys), drop=("event_id",))
-        for section, keys in _ROW_ORDER.items()
-    }
-    attempts, builds = rows[SECTION_ATTEMPT], rows[SECTION_BUILD]
-    revalidations, human_review = rows[SECTION_REVALIDATION], rows[SECTION_HUMAN_REVIEW]
+    attempts = wire_rows(
+        sort_rows(rows_for_event(parts.get(SECTION_ATTEMPT) or [], event), keys=("attempt", "dispatched_at")),
+        drop=("event_id",),
+    )
+    builds = wire_rows(
+        sort_rows(rows_for_event(parts.get(SECTION_BUILD) or [], event), keys=("recorded_at", "task_id")),
+        drop=("event_id",),
+    )
+    revalidations = wire_rows(
+        sort_rows(rows_for_event(parts.get(SECTION_REVALIDATION) or [], event), keys=("generation",)),
+        drop=("event_id",),
+    )
     paired = pair_keep_rounds(
-        attempts, revalidations, str(header.get(VALIDATING_KEEP_FIELD, "")), kept_status=ROUND_KEPT
+        attempts, revalidations, str(header.get(VALIDATING_KEEP_FIELD) or ""), kept_status=ROUND_KEPT
+    )
+    human_review = wire_rows(
+        sort_rows(rows_for_event(parts.get(SECTION_HUMAN_REVIEW) or [], event), keys=("recorded_at", "digest")),
+        drop=("event_id",),
     )
     result = _as_dict(header.get("result"))
     failure = _as_dict(header.get("failure")) or None
     ext: dict[str, Any] = {
-        "mode": str(header.get("mode", "")),
-        "origin": str(header.get("origin", "")),
+        "mode": str(header.get("mode") or ""),
+        "origin": str(header.get("origin") or ""),
         # Recorded, not inferred: an event that exists at all was engaged.
         "engaged": True,
         "trigger": _as_dict(header.get("trigger")) or None,
@@ -701,7 +710,7 @@ def assemble_enablement_ext(
         # always carries a verdict, including an explicitly insufficient one.
         "recipe": _as_dict(header.get("recipe")) or None,
     }
-    status = _status_for(result.get("outcome"), attempts=len(attempts)) if result else ""
+    status = _status_for(str(result.get("outcome") or ""), attempts=len(attempts)) if result else ""
     # A fault the lane survived outranks a clean terminal: the exception is
     # what says the outcome was not come by cleanly, matching KERNEL/FRAMEWORK.
     if failure:
@@ -806,6 +815,14 @@ def _archived_files(files: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
     return [
         {"path": str(f.get("path") or ""), "role": str(f.get("role") or "")} for f in files if isinstance(f, Mapping)
     ]
+
+
+def _archived_path(files: Sequence[Mapping[str, str]], role: str) -> str:
+    """Return the archived path recorded for a single-valued role, or ``""``."""
+    return next(
+        (str(f.get("path") or "") for f in files if isinstance(f, Mapping) and str(f.get("role") or "") == role),
+        "",
+    )
 
 
 def _config_row(config: Any) -> dict[str, Any] | None:

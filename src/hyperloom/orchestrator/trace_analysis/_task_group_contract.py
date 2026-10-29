@@ -378,12 +378,6 @@ def build_task_group_shape_cases(group: dict[str, Any]) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             return 0.0
 
-    def _call_count(row: dict[str, Any]) -> int:
-        try:
-            return int(row.get("call_count") or 0)
-        except (TypeError, ValueError):
-            return 0
-
     rows.sort(
         key=lambda row: (
             str(row.get("kernel_id") or "") != primary_kernel_id,
@@ -400,7 +394,11 @@ def build_task_group_shape_cases(group: dict[str, Any]) -> list[dict[str, Any]]:
         if existing is not None:
             if kernel_id and kernel_id not in existing["kernel_ids"]:
                 existing["kernel_ids"].append(kernel_id)
-            existing["call_count"] += _call_count(row)
+            try:
+                additional_call_count = int(row.get("call_count") or 0)
+            except (TypeError, ValueError):
+                additional_call_count = 0
+            existing["call_count"] += additional_call_count
             continue
 
         case: dict[str, Any] = {
@@ -411,8 +409,11 @@ def build_task_group_shape_cases(group: dict[str, Any]) -> list[dict[str, Any]]:
             "output_shapes": row.get("output_shapes") or [],
             "output_dtypes": row.get("output_dtypes") or [],
             "raw_arg_spec": row.get("raw_arg_spec") or {},
-            "call_count": _call_count(row),
         }
+        try:
+            case["call_count"] = int(row.get("call_count") or 0)
+        except (TypeError, ValueError):
+            case["call_count"] = 0
         case["_named_dimensions"] = named_dimensions(row)
         cases.append(case)
         by_signature[signature] = case

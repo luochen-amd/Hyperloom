@@ -10,8 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-from hyperloom.common.coerce import dict_rows, to_float, to_mapping
-
+from hyperloom.common.coerce import to_float
 
 log = logging.getLogger(__name__)
 
@@ -20,8 +19,10 @@ __all__ = [
     "RenderedSection",
     "RendererFn",
     "REGISTRY",
+    "as_dict",
     "close_of",
     "critic_iterations_of",
+    "dict_rows",
     "events_of",
     "outcome_of",
     "register_renderer",
@@ -34,6 +35,26 @@ __all__ = [
 ]
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    """Narrow a breakdown section to a mapping, since no producer is schema-checked."""
+    return value if isinstance(value, dict) else {}
+
+
+def dict_rows(value: Any) -> list[dict[str, Any]]:
+    """Narrow a recorded row array to the mappings in it.
+
+    Args:
+        value: A row array as read off an event's ``ext``.
+
+    Returns:
+        The entries that are dicts, in order; ``[]`` when the value is not a
+        list.
+    """
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
 def timeline_of(breakdown: Any) -> list[dict[str, Any]]:
     """The ordered event timeline.
 
@@ -43,7 +64,7 @@ def timeline_of(breakdown: Any) -> list[dict[str, Any]]:
     Returns:
         ``timeline``, oldest event first, or ``[]`` when absent.
     """
-    return dict_rows(to_mapping(breakdown).get("timeline"))
+    return dict_rows(as_dict(breakdown).get("timeline"))
 
 
 def events_of(breakdown: Any, event_type: str) -> list[dict[str, Any]]:
@@ -68,7 +89,7 @@ def session_of(breakdown: Any) -> dict[str, Any]:
     Returns:
         ``metadata.session``, or ``{}`` when absent.
     """
-    return to_mapping(to_mapping(breakdown).get("metadata")).get("session") or {}
+    return as_dict(as_dict(breakdown).get("metadata")).get("session") or {}
 
 
 def task_config_of(breakdown: Any) -> dict[str, Any]:
@@ -80,7 +101,7 @@ def task_config_of(breakdown: Any) -> dict[str, Any]:
     Returns:
         ``metadata.task_config``, or ``{}`` when absent.
     """
-    return to_mapping(to_mapping(breakdown).get("metadata")).get("task_config") or {}
+    return as_dict(as_dict(breakdown).get("metadata")).get("task_config") or {}
 
 
 def _target_label(target: dict[str, Any]) -> str:
@@ -105,11 +126,18 @@ def stop_target_text(objective: Any) -> str:
     Returns:
         The label, or ``""`` when no target was recorded.
     """
-    target = to_mapping(objective)
-    targets = (
-        [to_mapping(t) for t in target.get("objectives") or []] if isinstance(target.get("objectives"), list) else []
-    )
+    target = as_dict(objective)
+    targets = [as_dict(t) for t in target.get("objectives") or []] if isinstance(target.get("objectives"), list) else []
     return ", ".join(label for t in targets or [target] if (label := _target_label(t)))
+
+
+def measured_ms(value: Any) -> float | None:
+    """A latency reading in milliseconds, or ``None`` when the round measured none.
+
+    A workload that measures no request latency records ``0``, which is not a real reading.
+    """
+    ms = to_float(value)
+    return ms if ms is not None and ms > 0 else None
 
 
 def outcome_of(breakdown: Any) -> dict[str, Any]:
@@ -121,7 +149,7 @@ def outcome_of(breakdown: Any) -> dict[str, Any]:
     Returns:
         ``outcome``, or ``{}`` when absent.
     """
-    return to_mapping(to_mapping(breakdown).get("outcome"))
+    return as_dict(as_dict(breakdown).get("outcome"))
 
 
 def validation_of(breakdown: Any) -> dict[str, Any]:
@@ -133,7 +161,7 @@ def validation_of(breakdown: Any) -> dict[str, Any]:
     Returns:
         ``outcome.validation``, or ``{}`` when absent.
     """
-    return to_mapping(outcome_of(breakdown).get("validation"))
+    return as_dict(outcome_of(breakdown).get("validation"))
 
 
 def close_of(breakdown: Any) -> dict[str, Any]:
@@ -145,7 +173,7 @@ def close_of(breakdown: Any) -> dict[str, Any]:
     Returns:
         ``close``, or ``{}`` when absent.
     """
-    return to_mapping(to_mapping(breakdown).get("close"))
+    return as_dict(as_dict(breakdown).get("close"))
 
 
 def critic_iterations_of(breakdown: Any) -> list[dict[str, Any]]:
@@ -157,7 +185,7 @@ def critic_iterations_of(breakdown: Any) -> list[dict[str, Any]]:
     Returns:
         ``critic.iterations``, or ``[]`` when the critic never ran.
     """
-    return dict_rows(to_mapping(to_mapping(breakdown).get("critic")).get("iterations"))
+    return dict_rows(as_dict(as_dict(breakdown).get("critic")).get("iterations"))
 
 
 def stop_reason_of(breakdown: Any) -> str:
@@ -172,7 +200,7 @@ def stop_reason_of(breakdown: Any) -> str:
     Returns:
         The stop reason, or ``""`` when the run recorded none.
     """
-    return str(to_mapping(to_mapping(breakdown).get("outcome")).get("stop_reason") or "")
+    return str(as_dict(as_dict(breakdown).get("outcome")).get("stop_reason") or "")
 
 
 @dataclass(frozen=True)
@@ -228,7 +256,7 @@ def render_section(
     """Run one renderer so a failing section costs itself, not the report."""
     try:
         return fn(breakdown)
-    except Exception as exc:  # isolation boundary: one report section renderer
+    except Exception as exc:
         log.exception("report section %s failed to render", section_id)
         return RenderedSection(
             section_id=section_id,

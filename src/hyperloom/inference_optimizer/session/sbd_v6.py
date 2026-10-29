@@ -231,6 +231,8 @@ def read_write_warnings(
         return []
     rows = read_jsonl(
         path,
+        require_dict=True,
+        skip_malformed=True,
         on_error=(
             (lambda exc: warnings.append(f"timeline.write_warnings: failed to parse {path}: {exc!r}"))
             if warnings is not None

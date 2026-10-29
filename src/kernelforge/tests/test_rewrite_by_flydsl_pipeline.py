@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from kernelforge.config import Config
-from kernelforge.workflows.flydsl_rewrite import (
+from kernelforge.rewrite_by_flydsl import (
     driver_contract,
     flydsl_rewrite_driver_preparation,
     optimize,
@@ -20,20 +20,20 @@ from kernelforge.workflows.flydsl_rewrite import (
     report,
     runner,
 )
-from kernelforge.workflows.flydsl_rewrite import port_loop
-from kernelforge.workflows.flydsl_rewrite.attempt import create_attempt_workspace
-from kernelforge.workflows.flydsl_rewrite.applyback import ApplybackResult
-from kernelforge.workflows.flydsl_rewrite.ingest import RewriteSubject
-from kernelforge.workflows.flydsl_rewrite.kb import RewriteKbReadResult
-from kernelforge.workflows.flydsl_rewrite.request import (
+from kernelforge.rewrite_by_flydsl import port_loop
+from kernelforge.rewrite_by_flydsl.attempt import create_attempt_workspace
+from kernelforge.rewrite_by_flydsl.applyback import ApplybackResult
+from kernelforge.rewrite_by_flydsl.ingest import RewriteSubject
+from kernelforge.rewrite_by_flydsl.kb import RewriteKbReadResult
+from kernelforge.rewrite_by_flydsl.request import (
     ApplybackSwitch,
     DriverSetup,
     RewriteBudget,
     RewriteRun,
     RewriteWorkspace,
 )
-from kernelforge.workflows.flydsl_rewrite.spec import RewriteSpec
-from kernelforge.workflows.forge_loop.campaign.experiment import ExperimentTracker
+from kernelforge.rewrite_by_flydsl.spec import RewriteSpec
+from kernelforge.tracker import ExperimentTracker
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +122,11 @@ def test_port_program_md_handles_missing_and_oversized(tmp_path):
 
 
 # ── optimize: forge-loop launch + result trust ───────────────────────────────
+
+
+def test_optimize_argv_uses_current_interpreter():
+    argv = optimize._forge_loop_argv()
+    assert argv[-2:] == ["-m", "kernelforge.cli"]
 
 
 def test_optimize_announced_experiment_id():
@@ -555,6 +560,12 @@ def test_optimize_marks_a_cleanly_finished_ledger_complete(tmp_path, monkeypatch
 
     assert out["llm_usage"] == {"input_tokens": 500, "calls": 5}
     assert out["llm_usage_complete"] is True
+
+
+def test_optimize_argv_falls_back_to_console_script(monkeypatch):
+    monkeypatch.setattr(optimize.sys, "executable", "")
+    monkeypatch.setattr(optimize.shutil, "which", lambda name: "/usr/bin/kernelforge")
+    assert optimize._forge_loop_argv() == ["/usr/bin/kernelforge"]
 
 
 def test_optimize_no_trusted_result_returns_empty(tmp_path, monkeypatch):
@@ -2017,7 +2028,7 @@ _REAL_FLYDSL = (
 
 def _install_agent(monkeypatch, kernel_text):
     """Make make_agent_fn return an async agent that writes kernel_text to disk."""
-    import kernelforge.workflows.forge_loop.api as agent_mod
+    import kernelforge.orchestrator.agent as agent_mod
 
     def _make(*_args, **kw):
         async def _agent_fn(kernel_path, history, session_sink=None):
@@ -2105,7 +2116,7 @@ def test_port_loop_reports_validation_failure(tmp_path, monkeypatch):
 def test_port_loop_survives_a_session_crash(tmp_path, monkeypatch):
     s = _spec(tmp_path)
     (tmp_path / "driver.py").write_text("print('drive')\n")
-    import kernelforge.workflows.forge_loop.api as agent_mod
+    import kernelforge.orchestrator.agent as agent_mod
 
     def _make(*_args, **kw):
         async def _agent_fn(*a, **k):
@@ -2136,7 +2147,7 @@ def test_port_loop_restores_protected_inputs_without_validation(
     source_original = source.read_text()
     driver.write_text("print('original driver')\n")
     validation_calls: list[int] = []
-    import kernelforge.workflows.forge_loop.api as agent_mod
+    import kernelforge.orchestrator.agent as agent_mod
 
     def make_agent(*_args, **_kwargs):
         async def unsafe_agent(kernel_path, _history, session_sink=None):
@@ -2185,7 +2196,7 @@ def test_port_loop_does_not_create_an_agent_after_the_search_cutoff(
 ):
     s = _spec(tmp_path)
     (tmp_path / "driver.py").write_text("print('drive')\n")
-    import kernelforge.workflows.forge_loop.api as agent_mod
+    import kernelforge.orchestrator.agent as agent_mod
 
     def unexpected_agent(*_args, **kwargs):
         raise AssertionError("agent must not be created after the cutoff")
@@ -2210,7 +2221,7 @@ def test_port_loop_injects_rejected_kb_candidates_as_reference_context(
 ):
     s = _spec(tmp_path)
     (tmp_path / "driver.py").write_text("print('drive')\n")
-    import kernelforge.workflows.forge_loop.api as agent_mod
+    import kernelforge.orchestrator.agent as agent_mod
 
     captured = {}
 

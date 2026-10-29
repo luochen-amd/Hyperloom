@@ -10,8 +10,10 @@ import sys
 import types
 from pathlib import Path
 
-from hyperloom.common.model_paths import resolve_local_model_dir
-from hyperloom.inference_optimizer.model_config_utils import load_model_config_dict
+from hyperloom.inference_optimizer.model_config_utils import (
+    _load_model_config_dict,
+    resolve_local_model_dir,
+)
 
 
 def _make_model_dir(tmp_path: Path, cfg: dict | None = None) -> Path:
@@ -88,7 +90,7 @@ def test_load_model_config_dict_uses_resolver(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
 
     # A bare repo id (not a local dir) now resolves via the HF cache and parses.
-    data = load_model_config_dict("Qwen/Qwen3-8B")
+    data = _load_model_config_dict("Qwen/Qwen3-8B")
     assert isinstance(data, dict)
     assert data.get("model_type") == "qwen3"
 
@@ -96,7 +98,7 @@ def test_load_model_config_dict_uses_resolver(tmp_path, monkeypatch):
 def test_load_model_config_dict_local_dir_unchanged(tmp_path):
     # Regression: an existing local dir still parses without any resolver detour.
     d = _make_model_dir(tmp_path, {"model_type": "mixtral"})
-    data = load_model_config_dict(str(d))
+    data = _load_model_config_dict(str(d))
     assert isinstance(data, dict)
     assert data.get("model_type") == "mixtral"
 
@@ -116,7 +118,6 @@ def test_resolve_serving_model_path_prefers_hl_model_base(tmp_path, monkeypatch)
 def test_resolve_session_model_path_honors_params_then_env_then_state(monkeypatch):
     from hyperloom.common.model_paths import resolve_session_model_path
 
-    monkeypatch.delenv("HL_MODEL_BASE", raising=False)
     monkeypatch.setenv("MODEL_PATH", "/env/model")
     assert resolve_session_model_path(params={"model_path": "/params/model"}) == "/params/model"
     assert resolve_session_model_path(state_model_path="/state/model") == "/env/model"

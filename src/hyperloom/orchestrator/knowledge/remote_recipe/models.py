@@ -166,11 +166,12 @@ class KBSelectionProfile:
         cls,
         state: Any,
         *,
-        scope: RecipeScope,
+        scope: RecipeScope | None = None,
     ) -> "KBSelectionProfile":
         from hyperloom.common.perf_metric import agentx_active, output_tput_of
         from hyperloom.orchestrator.state.shared_state import resolve_graded_comparison
 
+        scope = scope or RecipeScope.from_state(state)
         current = getattr(state, "current_best", {}) or {}
         if not isinstance(current, dict):
             raise RemoteRecipeValidationError(
@@ -312,6 +313,8 @@ class Artifact:
 
     path: str
     source: Path
+    kind: str = "other"
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         validate_relative_path(self.path)

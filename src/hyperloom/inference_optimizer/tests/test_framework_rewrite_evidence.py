@@ -10,7 +10,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -249,8 +248,7 @@ def test_deep_probe_counts_calls_and_argument_repeats(probe_module, tmp_path):
     try:
         target.run(50)
     finally:
-        sys.setprofile(None)
-        threading.setprofile(None)  # type: ignore[arg-type]
+        probe.uninstall()
 
     report = probe.report()
     by_name = {row["function"].rsplit(":", 1)[-1]: row for row in report["framework_calls"]}
@@ -260,6 +258,7 @@ def test_deep_probe_counts_calls_and_argument_repeats(probe_module, tmp_path):
     assert by_name["invariant"]["strict_repeat_rate"] > 0.9
     # Loop counter: every call is distinct, so neither rate fires.
     assert by_name["varying"]["strict_repeat_rate"] == 0.0
+    assert report["tier2_enabled"] is True
     # Tier 2 timestamps its rows so the aggregator can tell a constructor that runs during model construction from a
     # function that runs every step.
     for row in report["framework_calls"]:
@@ -303,8 +302,7 @@ def test_deep_probe_timestamps_the_first_outermost_call(probe_module, tmp_path):
     try:
         target.run(8)
     finally:
-        sys.setprofile(None)
-        threading.setprofile(None)  # type: ignore[arg-type]
+        probe.uninstall()
 
     written = probe.write_report()
     assert written
@@ -453,9 +451,13 @@ def _report(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "schema": "hyperloom.host_probe/1",
         "rank": 0,
+        "world_size": 1,
+        "pid": 1,
         "wall_seconds": 100.0,
         "roots": ["/src/hyvideo/"],
         "roots_unset": False,
+        "tier1_enabled": True,
+        "tier2_enabled": False,
         "host_calls": [],
         "framework_calls": [],
         "truncated": {"host_calls": False, "framework_calls": False},
@@ -1506,7 +1508,7 @@ def test_evidence_collection_reports_an_aggregation_failure(tmp_path, monkeypatc
     from hyperloom.orchestrator.actions.executors.profile import ProfileExecutor
 
     def _boom(*_args, **_kwargs):
-        raise ValueError("truncated report")
+        raise RuntimeError("truncated report")
 
     monkeypatch.setattr(_ev, "aggregate_probe_dir", _boom)
     executor = ProfileExecutor()
@@ -1523,7 +1525,7 @@ def test_evidence_collection_reports_an_aggregation_failure(tmp_path, monkeypatc
 
 def test_gap_carries_the_host_side_bottleneck(tmp_path):
     """Host-side evidence contributes its own keyword to the framework arm's gap."""
-    from hyperloom.orchestrator.actions.executors._framework_gap_composer import compose_gap
+    from hyperloom.orchestrator.actions.executors._framework_gap_composer import GapEvidence, compose_gap
 
     document = evidence.build_evidence(
         [
@@ -1549,7 +1551,7 @@ def test_gap_carries_the_host_side_bottleneck(tmp_path):
         framework="custom",
         gpu_type="mi355x",
         precision="bf16",
-        rewrite_evidence_path=path,
+        evidence=GapEvidence(rewrite_evidence_path=path),
     )
     assert "collective_rendezvous" in gap
     assert "collective_rendezvous" in keywords
@@ -1557,21 +1559,23 @@ def test_gap_carries_the_host_side_bottleneck(tmp_path):
 
 def test_gap_is_unchanged_without_evidence():
     """Omitting the evidence path reproduces the previous gap exactly."""
-    from hyperloom.orchestrator.actions.executors._framework_gap_composer import compose_gap
+    from hyperloom.orchestrator.actions.executors._framework_gap_composer import GapEvidence, compose_gap
 
     assert compose_gap(framework="sglang", gpu_type="mi300x", precision="fp8") == compose_gap(
         framework="sglang",
         gpu_type="mi300x",
         precision="fp8",
-        rewrite_evidence_path=None,
+        evidence=GapEvidence(rewrite_evidence_path=None),
     )
 
 
 def test_gap_tolerates_a_missing_evidence_file(tmp_path):
     """A stale path degrades to the manifest-only gap rather than raising."""
-    from hyperloom.orchestrator.actions.executors._framework_gap_composer import compose_gap
+    from hyperloom.orchestrator.actions.executors._framework_gap_composer import GapEvidence, compose_gap
 
-    gap, keywords = compose_gap(framework="custom", rewrite_evidence_path=tmp_path / "absent.json")
+    gap, keywords = compose_gap(
+        framework="custom", evidence=GapEvidence(rewrite_evidence_path=tmp_path / "absent.json")
+    )
     assert gap == "improve custom throughput"
     assert keywords == ["custom"]
 

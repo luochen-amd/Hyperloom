@@ -48,6 +48,7 @@ class MockBackend:
         *,
         system_prompt: str | None = None,
         tools: list[str] | None = None,
+        disallowed_tools: list[str] | None = None,
         max_turns: int = 1,
     ) -> BackendTurnResult:
         """Record the call and play back the next scripted turn."""
@@ -121,6 +122,7 @@ class MockRowScanBackend:
         *,
         system_prompt: str | None = None,
         tools: list[str] | None = None,
+        disallowed_tools: list[str] | None = None,
         max_turns: int = 1,
     ) -> BackendTurnResult:
         """Emit one intent per not-yet-seen matched row, else an idle message."""

@@ -118,7 +118,8 @@ def test_golden_sglang_baseline(monkeypatch, tmp_path):
     res = we.materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=we.LaunchLayer(extra_server_args="--variant 4", args_mode="append"),
+        extra_server_args="--variant 4",
+        args_mode="append",
     )
     assert res.read_text(encoding="utf-8") == _GOLDEN_SGLANG_BASELINE
 
@@ -129,7 +130,7 @@ def test_golden_vllm(monkeypatch, tmp_path):
     res = we.materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=we.LaunchLayer(extra_server_args="--max-num-seqs 256"),
+        extra_server_args="--max-num-seqs 256",
     )
     assert res.read_text(encoding="utf-8") == _GOLDEN_VLLM
 
@@ -157,7 +158,8 @@ def test_unset_env_wins_over_extra_envs_for_the_same_key(monkeypatch, tmp_path):
     res = we.materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=we.LaunchLayer(extra_envs={"KEEP": "from_extra"}, unset_envs="KEEP"),
+        extra_envs={"KEEP": "from_extra"},
+        unset_envs="KEEP",
     )
     envs = yaml.safe_load(res.read_text())["benchmark"]["envs"]
     assert "KEEP" not in envs
@@ -171,7 +173,7 @@ def test_unset_env_dropped_when_not_in_extra_envs(monkeypatch, tmp_path):
     res = we.materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=we.LaunchLayer(unset_envs="KEEP"),
+        unset_envs="KEEP",
     )
     envs = yaml.safe_load(res.read_text())["benchmark"]["envs"]
     assert "KEEP" not in envs
@@ -204,7 +206,7 @@ def test_an_ordinary_benchmark_is_not_given_the_flydsl_source_dirs(monkeypatch, 
 
 
 def test_the_run_that_applied_a_flydsl_patch_asks_for_the_source_dirs(monkeypatch, tmp_path):
-    envs, root = _flydsl_env(monkeypatch, tmp_path, options=we.MaterializeOptions(flydsl_source_dirs=True))
+    envs, root = _flydsl_env(monkeypatch, tmp_path, flydsl_source_dirs=True)
 
     # A host with its own FlyDSL install contributes further roots, so the configured one being named is what matters,
     # not the whole list.
@@ -217,15 +219,15 @@ def test_an_explicitly_configured_value_is_never_clobbered(monkeypatch, tmp_path
     from_yaml, _root = _flydsl_env(
         monkeypatch,
         tmp_path,
+        flydsl_source_dirs=True,
         yaml_envs={"FLYDSL_EXTRA_SOURCE_DIRS": "/operator/yaml"},
-        options=we.MaterializeOptions(flydsl_source_dirs=True),
     )
     assert from_yaml["FLYDSL_EXTRA_SOURCE_DIRS"] == "/operator/yaml"
 
     from_extra, _root2 = _flydsl_env(
         monkeypatch,
         tmp_path / "second",
-        launch=we.LaunchLayer(extra_envs={"FLYDSL_EXTRA_SOURCE_DIRS": "/operator/extra"}),
-        options=we.MaterializeOptions(flydsl_source_dirs=True),
+        flydsl_source_dirs=True,
+        extra_envs={"FLYDSL_EXTRA_SOURCE_DIRS": "/operator/extra"},
     )
     assert from_extra["FLYDSL_EXTRA_SOURCE_DIRS"] == "/operator/extra"

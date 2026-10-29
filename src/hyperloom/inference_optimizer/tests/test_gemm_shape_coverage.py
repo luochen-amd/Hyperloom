@@ -501,14 +501,14 @@ class TestCoverageGateDoesNotBlockOnMissingEvidence:
         assert report["runtime_lookup_hit"] == 0
         assert report["runtime_lookup_miss"] == 1
 
-    def test_unreadable_evidence_is_undetermined(self, tmp_path):
-        """A log or CSV the body cannot read is undetermined rather than a block on the KEEP."""
+    def test_unexpected_failure_is_undetermined(self, tmp_path):
+        """The wrapper swallows anything the body throws (it can block a KEEP)."""
         from types import SimpleNamespace
 
         from hyperloom.orchestrator.phases.kernel import KernelPhase
 
         def _boom(*_args, **_kwargs):
-            raise PermissionError("server.log is not readable")
+            raise RuntimeError("coverage exploded")
 
         phase = SimpleNamespace(
             session_dir=tmp_path,
@@ -540,8 +540,10 @@ class TestE2EValidationFailsOpen:
 
         from hyperloom.orchestrator.phases.kernel import KernelPhase
 
+        recorded: list[dict] = []
         saved: list[object] = []
         state = SimpleNamespace(
+            record_gemm_tuning=recorded.append,
             save=saved.append,
             macro_cycle=0,
             gemm_tuning_attempts=[],
@@ -564,7 +566,7 @@ class TestE2EValidationFailsOpen:
             "timeline",
         ):
             setattr(phase, name, MethodType(getattr(KernelPhase, name), phase))
-        return phase, state
+        return phase, recorded
 
     @pytest.mark.asyncio
     async def test_exception_is_recorded_as_a_fault_not_raised(self, tmp_path):
@@ -573,12 +575,12 @@ class TestE2EValidationFailsOpen:
         async def _boom(_result):
             raise RuntimeError("e2e exploded")
 
-        phase, state = self._phase(tmp_path, _boom)
+        phase, recorded = self._phase(tmp_path, _boom)
         result: dict = {"backend": "forge"}
 
         await KernelPhase._handle_gemm_tuning_result(phase, result)
 
-        assert [attempt["backend"] for attempt in state.gemm_tuning_attempts] == ["forge"]
+        assert recorded == [result]
         fault = result["e2e_results"]["faults"][0]
         assert fault["error_class"] == "e2e_validation_exception"
         assert "RuntimeError: e2e exploded" in fault["error"]
@@ -638,10 +640,10 @@ class TestE2EValidationFailsOpen:
         async def _ok(_result):
             return None
 
-        phase, state = self._phase(tmp_path, _ok)
+        phase, recorded = self._phase(tmp_path, _ok)
         result: dict = {"backend": "forge"}
 
         await KernelPhase._handle_gemm_tuning_result(phase, result)
 
-        assert [attempt["backend"] for attempt in state.gemm_tuning_attempts] == ["forge"]
+        assert recorded == [result]
         assert "e2e_results" not in result

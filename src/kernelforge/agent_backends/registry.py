@@ -10,9 +10,9 @@ import os
 import re
 import threading
 from dataclasses import dataclass, replace
+from importlib import metadata
 from typing import Callable, Mapping
 
-from hyperloom.common.entry_points import iter_entry_point_objects
 from hyperloom.common.llm_config import DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_DEEPSEEK_HARNESS_MODEL
 from hyperloom.common.reasoning_effort import DEFAULT_REASONING_EFFORT
 from kernelforge.agent_backends.base import (
@@ -110,24 +110,32 @@ def discover_agent_providers(*, force: bool = False) -> None:
         if _plugins_loaded and not force:
             return
         _plugins_loaded = True
-        for found in iter_entry_point_objects(PROVIDER_ENTRY_POINT_GROUP):
-            if found.error is not None:
-                _plugin_errors[found.name] = found.error
-                # The shared helper has already logged why it could not be loaded.
-                continue
+        try:
+            entries = list(metadata.entry_points().select(group=PROVIDER_ENTRY_POINT_GROUP))
+        except Exception as exc:  # noqa: BLE001 - plugin discovery is optional
+            _plugin_errors["<discovery>"] = f"{type(exc).__name__}: {exc}"
+            log.warning("agent provider entry-point discovery failed: %s", exc)
+            return
+
+        for entry in entries:
             try:
-                provider = found.value
+                loaded = entry.load()
+                provider = loaded() if callable(loaded) else loaded
                 if not isinstance(provider, AgentProvider):
                     raise TypeError(
                         "entry point must resolve to AgentProvider or a zero-argument factory returning AgentProvider"
                     )
-                entry_name = normalize_provider_name(found.name)
+                entry_name = normalize_provider_name(entry.name)
                 if provider.name != entry_name:
                     raise ValueError(f"entry-point name {entry_name!r} does not match provider name {provider.name!r}")
                 register_agent_provider(provider)
-            except (TypeError, ValueError) as exc:
-                _plugin_errors[found.name] = f"{type(exc).__name__}: {exc}"
-                log.warning("failed to load Agent provider entry point %s: %s", found.name, exc)
+            except Exception as exc:  # noqa: BLE001 - isolate broken third-party plugins
+                _plugin_errors[entry.name] = f"{type(exc).__name__}: {exc}"
+                log.warning(
+                    "failed to load Agent provider entry point %s: %s",
+                    entry.name,
+                    exc,
+                )
 
 
 def get_agent_provider(name: str) -> AgentProvider:
@@ -176,9 +184,9 @@ def select_default_agent_provider(preferred_model: str = "") -> AgentProvider:
         """Answer one provider predicate, counting a raising provider as a "no"."""
         try:
             return bool(predicate())
-        except Exception as exc:  # isolation boundary: one provider predicate
+        except Exception as exc:  # noqa: BLE001 - one provider must not decide the whole selection
             failures.append(f"{provider.name}: {type(exc).__name__}: {exc}")
-            log.warning("agent provider %s check failed: %s", provider.name, exc, exc_info=True)
+            log.warning("agent provider %s check failed: %s", provider.name, exc)
             return False
 
     providers = [provider for provider in _providers.values() if provider.auto_selectable]
@@ -397,9 +405,6 @@ register_agent_provider(
             # environment it spawns the CLI with.
             session_env=True,
             workspace_guard=True,
-            # ClaudeBackend sends AgentRunSpec.shared_prompt_prefix as a text block with its own cache breakpoint and
-            # reports on_response_started from the SDK's partial stream events.
-            shared_prompt_cache=True,
         ),
         availability=_claude_available,
         credentialed=_claude_credentialed,

@@ -12,7 +12,6 @@ from hyperloom.orchestrator.knowledge.recipe_kb_t0 import (
     _cascade_warm_start_search,
     _donor_is_trustworthy,
     _find_config_donor,
-    WarmMatch,
 )
 
 
@@ -66,10 +65,14 @@ def test_donor_identity_falls_back_to_canonical_id() -> None:
 
 def test_explicit_zero_donor_confidence_is_preserved() -> None:
     context = _build_warm_start_context(
-        match=WarmMatch({}, "exact", 1.0),
+        tier="exact",
+        confidence=1.0,
         canonical_id="self-cid",
         source="recipe-kb",
-        config_donor=WarmMatch(_donor(), "kg_cross_model", 0.0),
+        recipe={},
+        config_donor=_donor(),
+        config_donor_tier="kg_cross_model",
+        config_donor_confidence=0.0,
     )
 
     assert context["recommended_replay"]["config_confidence"] == 0.0
@@ -214,7 +217,7 @@ def test_remote_cascade_skips_unproven_and_wrong_structure() -> None:
         def __init__(self) -> None:
             self.selected: list[str] = []
 
-        def get_recipe(self, *, canonical_id: str) -> dict[str, Any]:
+        def get_recipe(self, **_kwargs: Any) -> dict[str, Any]:
             return exact
 
         def search(self, **_kwargs: Any) -> list[dict[str, Any]]:
@@ -230,6 +233,7 @@ def test_remote_cascade_skips_unproven_and_wrong_structure() -> None:
         cid="self-cid",
         identity=_find_identity(),
         shape=_TARGET_SHAPE,
+        warm_prefer=None,
     )
 
     assert row["canonical_id"] == "selected"
@@ -241,8 +245,10 @@ def test_remote_cascade_skips_unproven_and_wrong_structure() -> None:
     assert confidence == 0.95
     assert kb.selected == ["selected"]
     context = _build_warm_start_context(
-        match=WarmMatch(row, tier, confidence),
+        tier=tier,
+        confidence=confidence,
         canonical_id="self-cid",
         source="kb-store",
+        recipe=row,
     )
     assert context["proven_prior"] == [{"name": "target-prior"}]

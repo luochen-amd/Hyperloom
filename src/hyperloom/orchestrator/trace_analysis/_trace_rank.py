@@ -31,10 +31,11 @@ def select_primary_trace(
     candidates: list[Path],
     *,
     file_size: Callable[[Path], int],
+    preferred_rank: int = 0,
     tensor_parallel_size: int | None = None,
 ) -> Path | None:
     """Select one single-rank trace without substituting another known rank."""
-    preferred = [path for path in candidates if trace_rank(path) == 0]
+    preferred = [path for path in candidates if trace_rank(path) == preferred_rank]
     if preferred:
         return max(preferred, key=lambda path: (file_size(path), path.name))
 

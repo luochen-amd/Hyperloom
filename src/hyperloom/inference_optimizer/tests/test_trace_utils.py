@@ -178,7 +178,7 @@ def test_mean_proposal_score_edge_cases():
     assert lm._mean_proposal_score([{"score": "8"}, {"nope": 1}]) == 8.0
 
 
-# --- _row_utils: closed-schema validation ----------------------------------
+# --- _row_utils: coercion + closed-schema validation -----------------------
 
 _FIELDS = frozenset({"session_id", "component"})
 _COMPONENTS = frozenset({"orchestration"})
@@ -188,6 +188,20 @@ def _row(**over):
     base = {"session_id": "sess-1", "component": "orchestration"}
     base.update(over)
     return base
+
+
+def test_coerce_optional_str_variants():
+    assert ru.coerce_optional_str(None) is None
+    assert ru.coerce_optional_str("   ") is None  # empty after strip
+    assert ru.coerce_optional_str("  hi  ") == "hi"
+    assert ru.coerce_optional_str(42) == "42"
+
+
+def test_coerce_optional_int_variants():
+    assert ru.coerce_optional_int(None) is None
+    assert ru.coerce_optional_int("7") == 7
+    assert ru.coerce_optional_int("nan") is None  # bad type -> None, distinct from 0
+    assert ru.coerce_optional_int(object()) is None
 
 
 def test_validate_closed_row_extra_or_missing_field_raises():
@@ -245,7 +259,24 @@ def test_validate_closed_row_accepts_valid_row():
     )
 
 
-# --- conversation_trace: tolerant I/O ---------------------------------------
+# --- conversation_trace: redaction + tolerant I/O --------------------------
+
+
+def test_redact_secrets_empty_returns_unchanged():
+    assert ct.redact_secrets("") == ""
+
+
+def test_redact_secrets_strips_bearer_and_env_shapes():
+    out = ct.redact_secrets("Authorization: Bearer abcd1234efgh and API_KEY=supersecretvalue")
+    assert "[REDACTED]" in out
+    assert "supersecretvalue" not in out
+    assert "abcd1234efgh" not in out
+
+
+def test_redact_secrets_masks_custom_headers():
+    out = ct.redact_secrets("ANTHROPIC_CUSTOM_HEADERS=Ocp-Apim-Subscription-Key: deadbeefsecret")
+    assert "deadbeefsecret" not in out
+    assert "[REDACTED]" in out
 
 
 def test_coerce_text_none_and_non_str():
@@ -261,7 +292,8 @@ def test_append_conversation_swallows_oserror(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ct, "append_jsonl", _boom)
     rec = ct.ConversationRecord(session_id="s1", component="orchestration", prompt="p", response="r")
-    ct.append_conversation(session_dir=tmp_path, record=rec)
+    # target set -> skips the Langfuse mirror branch; OSError swallowed.
+    ct.append_conversation(session_dir=tmp_path, record=rec, target=tmp_path / "conv.jsonl")
 
 
 def test_append_conversation_langfuse_mirror_failure_swallowed(tmp_path, monkeypatch):
@@ -281,5 +313,5 @@ def test_append_conversation_langfuse_mirror_failure_swallowed(tmp_path, monkeyp
     monkeypatch.setattr(le, "get_emitter", _boom)
 
     rec = ct.ConversationRecord(session_id="s1", component="orchestration", prompt="p", response="r")
-    ct.append_conversation(session_dir=tmp_path, record=rec)
+    ct.append_conversation(session_dir=tmp_path, record=rec)  # target=None -> mirror path
     assert written["row"]["component"] == "orchestration"

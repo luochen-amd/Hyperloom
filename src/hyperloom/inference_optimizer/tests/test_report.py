@@ -139,17 +139,6 @@ def test_degraded_mode_section_empty():
     assert rp._format_degraded_mode_section({}) == []
 
 
-_OUTPUT_COMPARISON = {
-    "objective": GRADED_OUTPUT,
-    "reference": 100.0,
-    "candidate": 136.146,
-    "gain_pct": 36.146,
-    "comparable": True,
-    "degrade_reason": "",
-    "verdict": VERDICT_KEEP,
-}
-
-
 def test_format_md_shows_validated_gain_when_timestamp_missing():
     md = rp._format_md(
         {
@@ -169,7 +158,6 @@ def test_format_md_shows_validated_gain_when_timestamp_missing():
             "pruned_families": [],
             "event_counts_by_topic": {},
             "highlights": [],
-            "performance_comparison": _OUTPUT_COMPARISON,
         }
     )
 
@@ -606,7 +594,6 @@ def test_format_md_renders_stop_explanation():
             "pruned_families": [],
             "event_counts_by_topic": {},
             "highlights": [],
-            "performance_comparison": _OUTPUT_COMPARISON,
         }
     )
     assert "Why it stopped" in md
@@ -623,7 +610,7 @@ def test_every_stop_reason_vocab_member_has_explanation():
 
 def test_classify_root_cause_prefers_kv_cache_oom_over_generic_oom():
     assert (
-        rp.classify_root_cause_type(
+        rp._classify_root_cause_type(
             "kv_cache_oom",
             "CUDA out of memory; no GPU memory for the KV cache",
         )

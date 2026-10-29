@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 from collections.abc import Callable
@@ -13,9 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from kernelforge.utils.durable_io import (
+from kernelforge.tools.durable_io import (
     atomic_write_bytes,
-    atomic_write_json,
     atomic_write_text,
     fsync_tree,
     fsync_tree_directories,
@@ -56,15 +54,6 @@ def test_atomic_write_replaces_prior_content_in_one_step(tmp_path):
 
     assert target.read_text() == '{"a": 2}'
     assert [p.name for p in target.parent.iterdir()] == ["result.json"]
-
-
-def test_atomic_write_json_publishes_one_stable_layout(tmp_path):
-    target = tmp_path / "out" / "state.json"
-    atomic_write_json(target, {"b": [1, 2], "a": {"z": 1, "y": 2}})
-
-    assert target.read_text() == '{\n  "a": {\n    "y": 2,\n    "z": 1\n  },\n  "b": [\n    1,\n    2\n  ]\n}\n'
-    assert json.loads(target.read_text()) == {"a": {"y": 2, "z": 1}, "b": [1, 2]}
-    assert [p.name for p in target.parent.iterdir()] == ["state.json"]
 
 
 def test_fsync_tree_visits_every_file_and_directory(tmp_path):

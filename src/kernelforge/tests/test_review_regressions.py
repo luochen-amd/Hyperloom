@@ -7,19 +7,18 @@ import ast
 
 import pytest
 
-from kernelforge.config.resources import resource_path
+from kernelforge.resources import resource_path
 
 from kernelforge.tests.conftest import PACKAGE_ROOT
 
-LOOP = PACKAGE_ROOT / "workflows" / "forge_loop"
+RUNNER = PACKAGE_ROOT / "loop" / "runner.py"
 
 
 def _calls_in_runner(name: str) -> int:
-    """How many times ``name`` is called across the loop package, ignoring its own def."""
-    trees = [ast.parse(path.read_text()) for path in sorted(LOOP.rglob("*.py"))]
+    """How many times ``name`` is called in runner.py, ignoring its own def."""
+    tree = ast.parse(RUNNER.read_text())
     return sum(
         1
-        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and (

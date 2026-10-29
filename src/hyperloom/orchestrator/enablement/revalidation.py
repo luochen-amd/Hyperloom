@@ -136,13 +136,11 @@ class EnablementRevalidation(CoordinatorCollaborator):
         generation = scan.generation
         for _attempt in range(max(1, scan.attempts)):
             task, _existing = await self.tasks.create_or_return_existing(
-                TaskSpec(
-                    kind=kind,
-                    params=params,
-                    idempotency_key=scan.key_for(generation),
-                    **create_kwargs,
-                    dispatch_class="coordinator",
-                )
+                kind=kind,
+                params=params,
+                idempotency_key=scan.key_for(generation),
+                **create_kwargs,
+                dispatch_class="coordinator",
             )
             if str(getattr(task, "state", "") or "") not in TERMINAL_STATES:
                 return task, generation

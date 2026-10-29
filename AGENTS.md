@@ -61,17 +61,16 @@ doc is the authority on where that boundary lives.
   crosses a trigger in the style guide § *Size and complexity* — the authority on the
   numbers, how to measure them, and when a long unit is fine as it stands — needs a reason
   in the PR description or a split. Editing a unit that was already over is not a demand to
-  repay its debt; adding branches or a second responsibility to it is. The two numbers
-  are review triggers, not gates, and the tree carries a backlog above both. Above
+  repay its debt; adding branches or a second responsibility to it is. The three numbers
+  are review triggers, not gates, and the tree carries a backlog above all three. Above
   them sits one ceiling — **a function this change adds, or
   whose cyclomatic complexity this change raises, may not exceed 20**; the style guide §
   *Complexity ceiling* has the measurement and the two cases it covers. Maintainability,
   readability, extensibility, and reliability are what the thresholds stand in for; when a
   threshold and one of those disagree, say so and keep the clearer code.
   The `code-metrics` CI job measures that ceiling and the other gated limits in the style
-  guide § *Size and complexity* on the files a change touches, against the same files at the
-  merge base; its `baseline-raise` label waives them only with the reason in the PR
-  description.
+  guide § *Size and complexity* on the files a change touches; its `baseline-raise` label
+  waives them only with the reason in the PR description.
 - **Review feedback is a hypothesis.** A comment can be wrong, or right about the symptom
   and wrong about the fix. Before acting on one, ask what you would build if this code did
   not exist yet, and whether the mechanism under discussion should exist at all. Answering
@@ -107,13 +106,9 @@ doc is the authority on where that boundary lives.
 - **New framework or platform?** Work bring-up through the owning components before
   integration code lands — see [`CONTRIBUTING.md`](CONTRIBUTING.md) § *Proposing a new
   framework or platform*.
-- **Don't grow the debt.** A new broad `except Exception` / bare `except` either re-raises,
-  or is the outermost handler on its path and logs the error with its traceback, or
-  isolates one item a loop must survive -- logging with the traceback, recording the
-  failure in a status the caller reads that a real result never carries, and naming what
-  it isolates in a comment on the `except` line. Otherwise catch the specific error or let
-  it raise (review-pr rule S8). No new feature flag or env toggle to route around a design
-  problem; a flag is a decision deferred.
+- **Don't grow the debt.** No new broad `except Exception` / bare `except` — catch the
+  specific error or let it raise. No new feature flag or env toggle to route around a
+  design problem; a flag is a decision deferred.
 - **Trust the caller.** Validate at the system boundary, then trust internal callers. The
   agents driving this system are capable, so redundant re-checks, layered fallbacks, and
   belt-and-braces defaults buy nothing — they hide the failure they were added to survive

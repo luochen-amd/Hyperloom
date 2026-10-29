@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -18,7 +19,7 @@ from hyperloom.orchestrator.state._shared_state.phase_state import _cap_tested_l
 from hyperloom.orchestrator.state.shared_state import SharedState
 from hyperloom.orchestrator.bus.gpu_pool import SpecialistGpuPool
 from hyperloom.orchestrator.bus.message_bus import Message, MessageBus
-from hyperloom.orchestrator.state.task_registry import TaskRegistry, TaskSpec
+from hyperloom.orchestrator.state.task_registry import TaskRegistry
 from hyperloom.orchestrator.bus.storage import SqliteConnection
 from hyperloom.orchestrator.bus.storage.schema import ensure_schema
 
@@ -31,15 +32,21 @@ def conn(tmp_path):
     db.close()
 
 
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="microseconds")
+
+
 # SharedState ledger caps
 def test_intervention_mix_capped():
     st = SharedState()
     cap = ss_mod._INTERVENTION_MIX_CAP
-    for _ in range(cap + 250):
-        st.record_intervention(change_type="config")
-    st.record_intervention(change_type="code_patch")
+    for i in range(cap + 250):
+        st.record_intervention(change_type="config", action="explore", task_id=str(i))
     assert len(st.intervention_mix) == cap
-    assert st.intervention_mix[-1]["change_type"] == "code_patch"
+    # Most-recent retained, oldest evicted.
+    assert st.intervention_mix[-1]["task_id"] == str(cap + 250 - 1)
+    # Control counter is NOT trimmed.
+    assert st.consecutive_config_only_rounds == cap + 250
 
 
 def test_specialist_rounds_capped():
@@ -144,12 +151,12 @@ async def test_prune_events_protects_pending_proposal(conn):
 async def test_prune_tasks_keeps_recent_done_and_spares_inflight(conn):
     reg = TaskRegistry(conn)
     # In-flight tasks that must never be pruned.
-    q, _ = await reg.create_or_return_existing(TaskSpec(kind="explore", params={}, idempotency_key="q1"))
-    r, _ = await reg.create_or_return_existing(TaskSpec(kind="explore", params={}, idempotency_key="r1"))
+    q = await reg.create(kind="explore", params={}, idempotency_key="q1")
+    r = await reg.create(kind="explore", params={}, idempotency_key="r1")
     await reg.transition(r.task_id, "running")
     done_ids = []
     for i in range(30):
-        t, _ = await reg.create_or_return_existing(TaskSpec(kind="explore", params={}, idempotency_key=f"d{i}"))
+        t = await reg.create(kind="explore", params={}, idempotency_key=f"d{i}")
         await reg.transition(t.task_id, "running")
         await reg.transition(t.task_id, "succeeded")
         done_ids.append(t.task_id)
@@ -162,14 +169,32 @@ async def test_prune_tasks_keeps_recent_done_and_spares_inflight(conn):
     assert int(rows[0]["c"]) == 10
 
 
+@pytest.mark.asyncio
+async def test_run_db_retention_aggregates(conn):
+    bus = MessageBus(conn)
+    for i in range(40):
+        await bus.append_and_seq(Message.new("orchestration", "*", "observation", {"i": i}))
+    res = await dbm.run_db_retention(conn, events_keep_recent=5)
+    assert res.events_deleted > 0
+    assert res.total == res.events_deleted + res.tasks_deleted
+
+
 # Retained GPU ownership
 @pytest.mark.asyncio
 async def test_gpu_pool_retains_old_leases(conn):
     pool = SpecialistGpuPool(conn, gpu_ids=[0, 1, 2, 3])
-    for gpu_id in (0, 1, 2):
+    now = datetime.now(timezone.utc)
+    # Insert one live + two expired leases directly.
+    rows = [
+        (0, "h0", "t0", _iso(now), _iso(now + timedelta(hours=1)), _iso(now)),
+        (1, "h1", "t1", _iso(now - timedelta(hours=2)), _iso(now - timedelta(hours=1)), _iso(now)),
+        (2, "h2", "t2", _iso(now - timedelta(hours=2)), _iso(now - timedelta(minutes=1)), _iso(now)),
+    ]
+    for row in rows:
         await conn.execute(
-            "INSERT INTO gpu_leases(gpu_id, holder_id, task_id) VALUES (?,?,?)",
-            (gpu_id, f"h{gpu_id}", f"t{gpu_id}"),
+            "INSERT INTO gpu_leases(gpu_id, holder_id, task_id, acquired_at, "
+            "expires_at, heartbeat_at) VALUES (?,?,?,?,?,?)",
+            row,
         )
     lease = await pool.try_acquire(count=1, holder_id="new", task_id="new")
     assert lease is not None and lease.gpu_ids == (3,)
@@ -260,8 +285,13 @@ async def test_coordinator_maintenance_reaps_leases_and_prunes(tmp_path, monkeyp
     }
     c = Coordinator(sd, backends=backends)
     try:
-        # Seed a GPU lease + some events with an advanced cursor.
-        await c.db.execute("INSERT INTO gpu_leases(gpu_id, holder_id, task_id) VALUES (?,?,?)", (0, "h", "t"))
+        # Seed an expired GPU lease + some events with an advanced cursor.
+        now = datetime.now(timezone.utc)
+        await c.db.execute(
+            "INSERT INTO gpu_leases(gpu_id, holder_id, task_id, acquired_at, "
+            "expires_at, heartbeat_at) VALUES (?,?,?,?,?,?)",
+            (0, "h", "t", _iso(now - timedelta(hours=2)), _iso(now - timedelta(hours=1)), _iso(now)),
+        )
         c.gpu_specialist_pool = SpecialistGpuPool(c.db, gpu_ids=[0, 1])
         for i in range(30):
             await c.bus.append_and_seq(Message.new("orchestration", "*", "observation", {"i": i}))
@@ -328,11 +358,12 @@ async def test_claude_backend_retries_transient_then_succeeds():
     backend = ClaudeBackend(
         sdk_query_factory=_factory,
         sdk_options_cls=_Options,
-        mcp_server_factory=lambda *a, **k: None,
+        enable_mcp_emit_intent=False,
         retry_policy=RetryPolicy(max_attempts=3, base_delay_s=0.0, jitter_s=0.0),
     )
     # Fast timeout so the first attempt's wait_for path is exercised.
     backend.call_timeout_s = 5.0
+    backend.mcp_tool_name = EMIT_INTENT_TOOL_QUALIFIED
 
     result = await backend.run("hi")
     assert state["n"] == 2  # one transient failure, one success

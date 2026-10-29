@@ -13,9 +13,8 @@ import pytest
 from kernelforge.agent_backends import claude as claude_mod
 from kernelforge.agent_backends.base import AgentRunSpec, AgentToolPolicy
 from kernelforge.agent_backends.claude import ClaudeBackend
-from kernelforge.utils.git import git
-from kernelforge.utils.process_reaping import ReapReport
-from kernelforge.config.edit_policy import FORGE_PROTECTED_PATHS
+from kernelforge.tools.git import git
+from kernelforge.tools.process_reaping import ReapReport
 
 
 class _FakeOptions:
@@ -48,7 +47,6 @@ def _spec(**overrides) -> AgentRunSpec:
         model="fake-model",
         timeout_sec=0.05,
         tool_policy=AgentToolPolicy(read=True, write=True, shell=True, max_turns=100),
-        protected_path_rules=FORGE_PROTECTED_PATHS,
     )
     base.update(overrides)
     return AgentRunSpec(**base)

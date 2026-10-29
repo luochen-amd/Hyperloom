@@ -448,19 +448,6 @@ def _binding_name(value: Any, where: str) -> str:
     return value
 
 
-def _compile_variadic(head: str, argument: Any, names: frozenset[str], location: str) -> Variadic:
-    function, arity = VARIADIC[head]
-    if not isinstance(argument, list):
-        raise MappingError(f"{location}: expects a list of arguments")
-    if arity is not None and len(argument) != arity:
-        raise MappingError(f"{location}: expects exactly {arity} arguments")
-    return Variadic(
-        head,
-        function,
-        tuple(compile_expression(item, names, f"{location}[{index}]") for index, item in enumerate(argument)),
-    )
-
-
 def _compile_call(node: Mapping[str, Any], names: frozenset[str], where: str) -> Expression:
     heads = BUILTINS.intersection(node)
     if len(heads) != 1:
@@ -478,7 +465,16 @@ def _compile_call(node: Mapping[str, Any], names: frozenset[str], where: str) ->
     if head in UNARY:
         return Unary(head, UNARY[head], compile_expression(argument, names, location))
     if head in VARIADIC:
-        return _compile_variadic(head, argument, names, location)
+        function, arity = VARIADIC[head]
+        if not isinstance(argument, list):
+            raise MappingError(f"{location}: expects a list of arguments")
+        if arity is not None and len(argument) != arity:
+            raise MappingError(f"{location}: expects exactly {arity} arguments")
+        return Variadic(
+            head,
+            function,
+            tuple(compile_expression(item, names, f"{location}[{index}]") for index, item in enumerate(argument)),
+        )
     if head == "object":
         if not isinstance(argument, Mapping):
             raise MappingError(f"{location}: expects a mapping of field expressions")

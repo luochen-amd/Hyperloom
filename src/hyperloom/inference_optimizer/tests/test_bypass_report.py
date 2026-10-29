@@ -18,21 +18,16 @@ def test_create_workspace_layout(tmp_path):
     assert (ws / "system_profile").is_dir()
 
 
-def test_build_report_reads_non_finite_client_values_as_zero():
-    """A client that reports inf/NaN still yields a report, written as strict JSON."""
-    report = br.build_report(
-        br.ReportSubject("vllm", "/models/x"),
-        br.RunOutcome(
-            False,
-            raw_result={"completed": float("inf"), "output_throughput": float("inf"), "mean_ttft_ms": float("nan")},
-        ),
-        workspace_dir="/ws",
-        execution_time=1.0,
-    )
-    assert report["throughput"]["completed_requests"] == 0
-    assert report["throughput"]["output_throughput"] == 0.0
-    assert report["latency"]["ttft"]["mean_ms"] == 0.0
-    json.dumps(report, allow_nan=False)
+def test_coerce_helpers_tolerate_bad_values():
+    # bool/None short-circuit to the default; bad strings fall through to default.
+    assert br._f(None) == 0.0
+    assert br._f(True) == 0.0
+    assert br._f("not-a-number") == 0.0
+    assert br._f("1.5") == 1.5
+    assert br._i(None) == 0
+    assert br._i(False) == 0
+    assert br._i("nope") == 0
+    assert br._i("7") == 7
 
 
 def test_build_report_without_raw_leaves_metrics_none():
@@ -58,7 +53,7 @@ def test_build_report_model_falls_back_to_raw_model_id():
     assert report["model"] == "raw-model"
 
 
-def test_build_report_carries_scriptable_extras():
+def test_build_report_carries_scriptable_extras_and_analysis():
     report = br.build_report(
         br.ReportSubject("xdit", "/models/flux"),
         br.RunOutcome(
@@ -70,6 +65,7 @@ def test_build_report_carries_scriptable_extras():
                 "quality_gate": {"passed": True},
                 "latency_s": 0.66,
             },
+            analysis={"failure_root_cause": "oom"},
         ),
         workspace_dir="/ws",
         execution_time=2.0,
@@ -78,6 +74,7 @@ def test_build_report_carries_scriptable_extras():
     assert report["throughput_unit"] == "img/s"
     assert report["quality_gate"] == {"passed": True}
     assert report["latency_s"] == 0.66
+    assert report["bypass_analysis"] == {"failure_root_cause": "oom"}
 
 
 def test_format_summary_text_minimal_report():

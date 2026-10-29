@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from hyperloom.inference_optimizer.cli import _redact_unknown_args
-from hyperloom.inference_optimizer.cli.launch_shape import (
+from hyperloom.inference_optimizer.cli import (
     _export_workload_envs_for_optimize,
+    _redact_unknown_args,
     _resolve_precision,
     _resolve_run_max_model_len,
     _resolve_workload_knobs,
@@ -24,8 +24,6 @@ from hyperloom.inference_optimizer.cli.launch_shape import (
 from hyperloom.orchestrator.actions.executors._workload_envs import (
     FrameworkScriptMismatchError,
     materialize_config_with_envs,
-    BenchmarkTarget,
-    LaunchLayer,
 )
 
 
@@ -118,7 +116,9 @@ def test_framework_script_mismatch_fails_fast(tmp_path):
         materialize_config_with_envs(
             src,
             tmp_path / "out",
-            target=BenchmarkTarget(model_path="/m", gpu_type="mi300x", benchmark_script="sglang_mi300x.sh"),
+            model_path="/m",
+            gpu_type="mi300x",
+            benchmark_script="sglang_mi300x.sh",
         )
 
 
@@ -129,7 +129,8 @@ def test_framework_script_match_ok(tmp_path):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        target=BenchmarkTarget(model_path="/m", gpu_type="mi300x"),
+        model_path="/m",
+        gpu_type="mi300x",
     )
     bench = yaml.safe_load(out.read_text())["benchmark"]
     assert bench["benchmark_script"] == "vllm_mi300x.sh"
@@ -141,7 +142,8 @@ def test_r9700_materializes_vllm_gfx12_runner(tmp_path):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        target=BenchmarkTarget(model_path="/m", gpu_type="r9700"),
+        model_path="/m",
+        gpu_type="r9700",
     )
     bench = yaml.safe_load(out.read_text())["benchmark"]
     assert bench["runner_type"] == "gfx12"
@@ -160,7 +162,8 @@ def test_r9700_materialized_config_is_lifecycle_eligible(tmp_path, monkeypatch):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        target=BenchmarkTarget(model_path="/m", gpu_type="r9700"),
+        model_path="/m",
+        gpu_type="r9700",
     )
 
     info = sl.resolve_lifecycle_params(out)
@@ -235,10 +238,10 @@ def test_json_serve_arg_survives_append_merge_as_valid_json(tmp_path):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=LaunchLayer(
-            extra_server_args="--compilation-config {cudagraph_mode:FULL} --speculative-config {method:ngram,num_speculative_tokens:7}",
-            args_mode="append",
+        extra_server_args=(
+            "--compilation-config {cudagraph_mode:FULL} --speculative-config {method:ngram,num_speculative_tokens:7}"
         ),
+        args_mode="append",
     )
     args = yaml.safe_load(out.read_text())["benchmark"]["envs"]["EXTRA_VLLM_ARGS"]
     blobs = re.findall(r"\{[^{}]*\}", args)
@@ -267,11 +270,11 @@ def test_unquoted_json_with_a_path_value_is_repaired_for_warm_replay(tmp_path):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=LaunchLayer(
-            extra_server_args="--speculative-config {model:/models/Draft-DSpark,num_speculative_tokens:5,method:dspark,"
-            "attention_backend:ROCM_AITER_MLA,kv_cache_dtype:fp8,disable_eagle_block_drop:true}",
-            args_mode="append",
+        extra_server_args=(
+            "--speculative-config {model:/models/Draft-DSpark,num_speculative_tokens:5,method:dspark,"
+            "attention_backend:ROCM_AITER_MLA,kv_cache_dtype:fp8,disable_eagle_block_drop:true}"
         ),
+        args_mode="append",
     )
     args = yaml.safe_load(out.read_text())["benchmark"]["envs"]["EXTRA_VLLM_ARGS"]
 
@@ -299,7 +302,7 @@ def test_json_serve_arg_survives_shape_capture_port_removal(tmp_path):
     out = materialize_config_with_envs(
         src,
         tmp_path / "out",
-        launch=LaunchLayer(remove_args=["--port"]),
+        remove_args=["--port"],
     )
     args = yaml.safe_load(out.read_text())["benchmark"]["envs"]["EXTRA_VLLM_ARGS"]
 

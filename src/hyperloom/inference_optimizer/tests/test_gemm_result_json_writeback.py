@@ -61,7 +61,16 @@ def _workspace_with_pre_e2e_result(tmp_path: Path) -> Path:
 def _fmoe_ck_result(csv_path: str, workspace: Path) -> dict:
     return {
         "workspace": str(workspace),
-        "candidates": [{"tuner": "fmoe_ck", "env": {"AITER_CONFIG_FMOE_CK": csv_path}, "best_micro_speedup": 1.4}],
+        "tuners_run": [
+            {
+                "tuner": "fmoe_ck",
+                "status": "ok",
+                "candidate": True,
+                "env_var": "AITER_CONFIG_FMOE_CK",
+                "env_value": csv_path,
+                "best_micro_speedup": 1.4,
+            }
+        ],
     }
 
 
@@ -113,7 +122,7 @@ def test_writeback_failure_preserves_the_existing_file(tmp_path: Path, monkeypat
     def _boom(*_a, **_k):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr("hyperloom.orchestrator.phases.kernel_gemm_tuning.atomic_write_json", _boom)
+    monkeypatch.setattr("hyperloom.orchestrator.phases.kernel.atomic_write_json", _boom)
 
     _phase(tmp_path, model)._writeback_gemm_result_json({"workspace": str(ws), "decision": "REVERT"})
 

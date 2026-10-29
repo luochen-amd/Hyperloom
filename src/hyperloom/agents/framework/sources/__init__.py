@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Callable, Iterable
 
 from ..keywords import score_title_with_anti_signal
@@ -35,25 +36,57 @@ def _dedupe(items: Iterable[Candidate]) -> list[Candidate]:
     return out
 
 
-def _pr_to_candidate(pr: GitHubPr) -> Candidate:
+def _pr_to_candidate(
+    pr: GitHubPr,
+    repo_url: str,
+    source: str,
+    *,
+    score: float = 0.0,
+) -> Candidate:
     """Convert a GitHubPr (any backend) into a downstream Candidate."""
-    return Candidate(ref=pr.ref, title=pr.title, html_url=pr.html_url)
+    return Candidate(
+        ref=pr.ref,
+        repo=repo_url,
+        source=source,
+        title=pr.title,
+        html_url=pr.html_url,
+        score=float(score),
+    )
 
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BackendSpec:
+    """A PR-source backend: its mode name and runner."""
+
+    name: str
+    run: Callable[[CandidateSearchRequest], list[Candidate]]
+
+    def invoke(self, request: CandidateSearchRequest) -> list[Candidate]:
+        """Run the backend."""
+        return self.run(request)
+
+
+# Registry of PR-source backends keyed by ``search_mode``.
+_SEARCH_BACKENDS: dict[str, BackendSpec] = {
+    "pr_monitor": BackendSpec("pr_monitor", lambda req: _run_pr_monitor(req)),
+    "github": BackendSpec("github", lambda req: _run_github(req)),
+}
 
 
 def enumerate_candidates(request: CandidateSearchRequest) -> list[Candidate]:
     """Enumerate candidates per ``request.search_modes`` and union the results."""
     out: list[Candidate] = []
     for mode in request.search_modes:
-        runner = _SEARCH_BACKENDS.get(mode)
-        if runner is None:
+        spec = _SEARCH_BACKENDS.get(mode)
+        if spec is None:
             raise SourceConfigError(f"unknown search_mode: {mode!r}")
-        found = runner(request)
+        found = spec.invoke(request)
         _log.info(
             "enumerate_candidates: %s returned %d candidate(s)",
-            mode,
+            spec.name,
             len(found),
         )
         out.extend(found)
@@ -71,9 +104,10 @@ def _run_github(request: CandidateSearchRequest) -> list[Candidate]:
     prs = github_backend.search_perf_prs(
         request.repo_url,
         limit=request.max_search_candidates,
+        states=request.pr_states,
         terms=terms,
     )
-    return [_pr_to_candidate(pr) for pr in prs]
+    return [_pr_to_candidate(pr, request.repo_url, "github") for pr in prs]
 
 
 def _resolve_keywords(request: CandidateSearchRequest) -> list[str]:
@@ -83,6 +117,8 @@ def _resolve_keywords(request: CandidateSearchRequest) -> list[str]:
 
 def _rank_by_keyword_overlap(prs: list[GitHubPr], keywords: list[str]) -> list[GitHubPr]:
     """Stable-rerank PRs by anti-aware keyword score."""
+    if not keywords:
+        return list(prs)
     return sorted(
         prs,
         key=lambda pr: score_title_with_anti_signal(pr.title or "", keywords),
@@ -97,13 +133,26 @@ def _run_pr_monitor(request: CandidateSearchRequest) -> list[Candidate]:
         raise SourceConfigError("search_modes contains 'pr_monitor' but the request carries no pr_monitor config")
     requested = max(1, request.max_search_candidates)
 
+    # Merged/closed PRs are the backport-relevant ones that may already be in the local dev build; semantic audit
+    # downstream judges + dedups them.
+    states = request.pr_states
+    broad = any(s in ("merged", "closed", "all") for s in states)
+    search_state = "all" if broad else "open"
+    # Only forward ``state`` to the listing endpoint when broadening.
+    list_state_kwargs: dict[str, str] = {"state": search_state} if broad else {}
+
     keywords = _resolve_keywords(request)
 
     if not keywords:
-        prs = list_perf_prs(request.repo_url, monitor=cfg, limit=requested)
-        return [_pr_to_candidate(pr) for pr in prs]
+        prs = list_perf_prs(
+            request.repo_url,
+            monitor=cfg,
+            limit=requested,
+            **list_state_kwargs,
+        )
+        return [_pr_to_candidate(pr, request.repo_url, "pr_monitor") for pr in prs]
 
-    over_fetch = requested * 3
+    over_fetch = max(requested * 3, requested)
     query = " ".join(keywords)
     try:
         prs = search_perf_prs_via_pr_monitor_search(
@@ -111,25 +160,38 @@ def _run_pr_monitor(request: CandidateSearchRequest) -> list[Candidate]:
             monitor=cfg,
             query=query,
             limit=over_fetch,
+            state=search_state,
         )
     except PRMonitorError:
         # Service may not implement /v1/search/prs; fall back to the plain listing.
-        prs = list_perf_prs(request.repo_url, monitor=cfg, limit=over_fetch)
+        prs = list_perf_prs(
+            request.repo_url,
+            monitor=cfg,
+            limit=over_fetch,
+            **list_state_kwargs,
+        )
 
     # /v1/search/prs uses word-AND matching; a long query can filter the pool to zero, so fall back to the plain
     # listing + client rerank.
     if not prs:
-        prs = list_perf_prs(request.repo_url, monitor=cfg, limit=over_fetch)
+        prs = list_perf_prs(
+            request.repo_url,
+            monitor=cfg,
+            limit=over_fetch,
+            **list_state_kwargs,
+        )
 
+    # Rank then trim; scores are carried on Candidate.score.
     ranked = _rank_by_keyword_overlap(prs, keywords)[:requested]
-    return [_pr_to_candidate(pr) for pr in ranked]
-
-
-# Registry of PR-source runners keyed by ``search_mode``.
-_SEARCH_BACKENDS: dict[str, Callable[[CandidateSearchRequest], list[Candidate]]] = {
-    "pr_monitor": _run_pr_monitor,
-    "github": _run_github,
-}
+    return [
+        _pr_to_candidate(
+            pr,
+            request.repo_url,
+            "pr_monitor",
+            score=score_title_with_anti_signal(pr.title or "", keywords),
+        )
+        for pr in ranked
+    ]
 
 
 __all__ = [

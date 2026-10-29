@@ -9,8 +9,15 @@ import re
 from pathlib import Path
 
 from hyperloom.inference_optimizer.recipe_snapshot_constants import (
+    DEFAULT_ARCHITECTURES_SLUG,
+    DEFAULT_FRAMEWORK_SLUG,
     DEFAULT_FRAMEWORK_VERSION_SLUG,
-    RecipeIdentity,
+    DEFAULT_HARDWARE_SLUG,
+    DEFAULT_MODEL_SLUG,
+    DEFAULT_MODEL_TYPE_SLUG,
+    DEFAULT_PRECISION_SLUG,
+    canonical_labels,
+    detect_framework_version,
     recipe_canonical_id,
 )
 
@@ -36,21 +43,6 @@ class InvalidCanonicalIdError(ValueError):
         super().__init__(f"invalid canonical_id {raw!r}: {reason}")
         self.raw = raw
         self.reason = reason
-
-
-def recipe_framework_version(version: str) -> str:
-    """The framework release a recipe identity is keyed by.
-
-    ``0.30.0+rocm723`` and ``v0.30.0`` both name release ``0.30.0``: the build suffix names the image the release was
-    compiled into, which ``framework_version`` in the session state keeps. A blank or unknown version is returned
-    unchanged.
-    """
-    text = str(version or "").strip()
-    if not text or text == DEFAULT_FRAMEWORK_VERSION_SLUG:
-        return text
-    from kernelforge.knowledge import canonical_framework_version
-
-    return canonical_framework_version(text)
 
 
 def cid_to_path_components(
@@ -105,24 +97,30 @@ def canonical_id_for_path(*, root: Path, recipe_dir: Path) -> str:
         )
     model, hardware, framework_name, model_type, architectures, framework_version, precision = parts
     return recipe_canonical_id(
-        RecipeIdentity(
-            model=model,
-            hardware=hardware,
-            framework_name=framework_name,
-            model_type=model_type,
-            architectures=architectures,
-            framework_version=framework_version,
-            precision=precision,
-        )
+        model=model,
+        hardware=hardware,
+        framework_name=framework_name,
+        model_type=model_type,
+        architectures=architectures,
+        framework_version=framework_version,
+        precision=precision,
     )
 
 
 __all__ = [
     "CANONICAL_ID_PREFIX",
     "CANONICAL_ID_DIMENSIONS",
+    "DEFAULT_ARCHITECTURES_SLUG",
+    "DEFAULT_FRAMEWORK_SLUG",
+    "DEFAULT_FRAMEWORK_VERSION_SLUG",
+    "DEFAULT_HARDWARE_SLUG",
+    "DEFAULT_MODEL_SLUG",
+    "DEFAULT_MODEL_TYPE_SLUG",
+    "DEFAULT_PRECISION_SLUG",
     "InvalidCanonicalIdError",
     "canonical_id_for_path",
+    "canonical_labels",
     "cid_to_path_components",
+    "detect_framework_version",
     "recipe_canonical_id",
-    "recipe_framework_version",
 ]

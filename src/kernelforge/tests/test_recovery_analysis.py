@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from kernelforge.workflows.forge_loop.iteration import runner as runner_module
-from kernelforge.workflows.forge_loop.campaign.run_state import LoopStateStore, RunState, make_event
-from kernelforge.workflows.forge_loop.iteration.runner import IterationResult
-from kernelforge.workflows.forge_loop.roles.analysis import (
+from kernelforge.loop import runner as runner_module
+from kernelforge.loop.run_state import LoopStateStore, RunState, make_event
+from kernelforge.loop.runner import IterationResult
+from kernelforge.orchestrator.analysis import (
     AnalysisAgentService,
     AnalysisBundleError,
     AnalysisSources,
@@ -19,7 +19,6 @@ from kernelforge.workflows.forge_loop.roles.analysis import (
 )
 from kernelforge.tests.test_analysis_agent import _BundleBackend, _context, _service, _workspace
 from kernelforge.tests.test_loop_runner import _make_loop
-from kernelforge.workflows.forge_loop.iteration import campaign_runtime
 
 
 def test_resume_recovery_rejects_gap_before_pending_keep(tmp_path, monkeypatch):
@@ -82,7 +81,7 @@ def test_keep_archive_failure_is_non_fatal_and_clears_pending_journal(
 
     monkeypatch.setattr(loop, "run_one_iteration", successful_iteration)
     monkeypatch.setattr(
-        campaign_runtime.CandidateArchive,
+        runner_module.CandidateArchive,
         "record",
         lambda _archive, _record: (_ for _ in ()).throw(OSError("simulated archive failure")),
     )

@@ -18,7 +18,6 @@ os.environ.setdefault("MORI_GPU_ARCHS", "gfx942")
 
 import argparse
 import sys
-import traceback
 from dataclasses import dataclass
 
 import torch
@@ -87,7 +86,7 @@ def _dist_teardown(op=None, *, healthy: bool = True) -> None:
 
             mori.shmem.shmem_finalize()
         except Exception:  # noqa: BLE001 - not fatal if already torn down/unavailable
-            print(f"warning: mori shmem_finalize failed during teardown\n{traceback.format_exc()}", file=sys.stderr)
+            pass
     if dist.is_initialized():
         try:
             dist.destroy_process_group()
@@ -457,7 +456,7 @@ def _run_correctness(mode: str) -> int:
             nprocs=_WORLD_SIZE,
             join=True,
         )
-    except (mp.ProcessRaisedException, mp.ProcessExitedException, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001 - surface as a driver failure, not a crash
         print("allclose: False")
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -479,7 +478,7 @@ def _run_bench(plan: _BenchPlan) -> int:
             nprocs=_WORLD_SIZE,
             join=True,
         )
-    except (mp.ProcessRaisedException, mp.ProcessExitedException, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"error: {exc}", file=sys.stderr)
         return 1
     try:
@@ -506,7 +505,7 @@ def _run_profile(case_id: str) -> int:
         return 2
     try:
         mp.spawn(_profile_worker, args=(_WORLD_SIZE,), nprocs=_WORLD_SIZE, join=True)
-    except (mp.ProcessRaisedException, mp.ProcessExitedException, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

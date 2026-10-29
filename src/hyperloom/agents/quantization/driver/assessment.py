@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .eval import decide as decide_eval
 from .outcomes import (
     ASK,
+    ASK_RETRYABLE,
     AUTO_FAIL,
     AUTO_RECOVER,
     MUST_HAVE_RECOVERS_THAT_FAIL_WITHOUT_ARTIFACT,
     OutcomeId,
     SUCCESS_TAGS,
 )
-from .result_collector import CollectedArtifacts
+from .result_collector import CollectedArtifacts, collect_artifacts
 
 
 _BLOCKED_OUTCOME_RE = re.compile(r"(?:^|\n)\s*outcome_id\s*:\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
@@ -220,14 +222,17 @@ def _classify_bootstrap_sdk_error(sdk_error: str) -> OutcomeId | None:
 
 
 def classify_attempt(
-    art: CollectedArtifacts,
+    workspace: Path,
     *,
     sdk_error: str | None = None,
+    last_phase: str | None = None,
     acceptable_eval_gap: float | None = None,
+    artifacts: CollectedArtifacts | None = None,
 ) -> OutcomeId | None:
-    """Classify a single attempt's collected workspace artifacts."""
+    """Classify a single attempt's workspace state."""
 
-    phase = art.last_phase
+    art = artifacts if artifacts is not None else collect_artifacts(Path(workspace))
+    phase = last_phase or art.last_phase
 
     # (1) Bootstrap-class sdk_error wins over disk evidence.
     if sdk_error:
@@ -253,7 +258,7 @@ def classify_attempt(
             return phase_outcome
 
     # (4) MUST-have files on the quantized directory, then (5) validator results.
-    if art.manifest_present:
+    if art.manifest_present and not art.manifest_parse_error:
         if not art.quantized_dir_exists or not art.has_weights:
             return OutcomeId.must_have_weights_missing
         if not art.has_config_json:
@@ -288,28 +293,14 @@ def classify_attempt(
     return None
 
 
-def classify_unfinished_attempt(sdk_error: str | None, *, phase: str | None) -> OutcomeId:
-    """Classify an attempt that wrote no end: no ``blocked.md``, eval report or eval-skipped reason.
-
-    Only what the attempt raised can say why it stopped: the model, manifest
-    and reports on disk may all be an earlier attempt's. That is also why the
-    outcome is never an auto-recover one: those end the run ``partial`` and
-    hand back the model on disk as this run's result.
-    """
-    if sdk_error:
-        outcome = _classify_bootstrap_sdk_error(sdk_error) or _classify_sdk_phase_error(sdk_error, phase)
-        if outcome is not None and outcome not in AUTO_RECOVER:
-            return outcome
-    return OutcomeId.unclassified_failure
-
-
 # Assessment assembly
 
 
 def build_assessment(
     attempts: list[OutcomeId | None],
     *,
-    artifacts: CollectedArtifacts,
+    workspace: Path,
+    artifacts: CollectedArtifacts | None = None,
     notes: tuple[str, ...] = (),
 ) -> Assessment:
     """Assemble an ``Assessment`` from a chronological attempts list."""
@@ -317,12 +308,13 @@ def build_assessment(
     if not attempts:
         raise ValueError("attempts must be non-empty")
 
+    art = artifacts if artifacts is not None else collect_artifacts(Path(workspace))
     final = attempts[-1]
     recovered = len(attempts) > 1 and final in SUCCESS_TAGS
 
     eval_gap: float | None = None
-    if isinstance(artifacts.eval_report_data, dict):
-        raw = artifacts.eval_report_data.get("relative_gap")
+    if isinstance(art.eval_report_data, dict):
+        raw = art.eval_report_data.get("relative_gap")
         try:
             eval_gap = float(raw) if raw is not None else None
         except (TypeError, ValueError):
@@ -377,4 +369,9 @@ __all__ = [
     "classify_attempt",
     "build_assessment",
     "derive_status",
+    "AUTO_FAIL",
+    "AUTO_RECOVER",
+    "ASK",
+    "ASK_RETRYABLE",
+    "SUCCESS_TAGS",
 ]

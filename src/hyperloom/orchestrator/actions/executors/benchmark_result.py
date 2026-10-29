@@ -155,8 +155,10 @@ def _env_derived_leak_roots() -> list[Path]:
     return out
 
 
-def _resolve_leak_roots() -> tuple[Path, ...]:
+def _resolve_leak_roots(leak_root: Path | None) -> tuple[Path, ...]:
     """Return the directory roots to scan for wrapper-side leak files."""
+    if leak_root is not None:
+        return (leak_root,)
     env_raw = os.environ.get("INFERENCE_OPTIMIZER_LEAK_ROOTS", "").strip()
     if env_raw:
         parts = [Path(p.strip()) for p in env_raw.split(":") if p.strip()]
@@ -186,10 +188,12 @@ def harvest_leaked_artifacts(
     destination: Path,
     *,
     subprocess_started_unix: float | None = None,
+    leak_root: Path | None = None,
+    extra_globs: tuple[str, ...] = (),
 ) -> list[tuple[Path, Path]]:
     """Copy known Magpie/InferenceX leak artifacts into ``destination``."""
     harvested: list[tuple[Path, Path]] = []
-    leak_roots = _resolve_leak_roots()
+    leak_roots = _resolve_leak_roots(leak_root)
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -204,6 +208,7 @@ def harvest_leaked_artifacts(
     except OSError:
         return harvested
 
+    globs = tuple(_DEFAULT_LEAK_ARTIFACT_GLOBS) + tuple(extra_globs)
     seen: set[Path] = set()
     for root in leak_roots:
         try:
@@ -211,7 +216,7 @@ def harvest_leaked_artifacts(
                 continue
         except OSError:
             continue
-        for pattern in _DEFAULT_LEAK_ARTIFACT_GLOBS:
+        for pattern in globs:
             try:
                 matches = sorted(root.glob(pattern))
             except OSError:
@@ -837,15 +842,6 @@ def is_valid_measurement(result: dict[str, Any] | None) -> bool:
     return completed is not None and completed > 0
 
 
-def round_succeeded(measurement: dict[str, Any]) -> bool:
-    """Whether a round ran to the verdict its kind accepts.
-
-    A native AgentX round that Magpie marks diagnostic (a profile) is never a valid measurement: the trace it leaves is
-    what it is run for, so Magpie's own ``round_succeeded`` decides it. Any other round succeeds when it is valid.
-    """
-    return measurement.get("round_succeeded", measurement.get("valid_measurement")) is True
-
-
 def served_complete_protocol(result: dict[str, Any]) -> bool:
     """Return whether the run served every request its protocol asked for.
 
@@ -897,12 +893,18 @@ def double_run_requested(params: dict | None) -> bool:
 
 
 __all__ = [
+    "LATENCY_DERIVED",
+    "LATENCY_FROM_RAW",
+    "LATENCY_FROM_REPORT",
+    "LATENCY_FROM_RESCUED_RAW",
+    "LATENCY_UNAVAILABLE",
+    "harvest_mn_gpu_metrics",
     "extract_benchmark_measurement",
     "harvest_leaked_artifacts",
     "double_run_requested",
     "is_valid_measurement",
-    "round_succeeded",
     "served_complete_protocol",
+    "_materialize_rescue_into_workspace",
 ]
 
 

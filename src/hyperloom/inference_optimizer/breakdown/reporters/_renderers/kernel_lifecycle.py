@@ -157,6 +157,15 @@ def render(breakdown: dict[str, Any]) -> RenderedSection:
             section_id="kernel_lifecycle",
             title="Kernel Lifecycle",
             key_facts=["No kernels detected this session."],
+            markdown_block="",
+            decisions=[
+                Decision(
+                    kind="not_attempted",
+                    subject="kernel_lifecycle",
+                    rationale="no detected kernels",
+                )
+            ],
+            warnings=[],
             skipped=True,
         )
 
@@ -187,7 +196,7 @@ def render(breakdown: dict[str, Any]) -> RenderedSection:
         for kind, subject, said in _VERDICT_DECISIONS
         if verdicts[kind]
     ]
-    if verdicts["not_optimized"] == len(detected):
+    if not decisions and not verdicts["attempted"]:
         decisions.append(
             Decision(
                 kind="not_attempted",

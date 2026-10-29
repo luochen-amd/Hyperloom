@@ -217,28 +217,32 @@ def _assert_detached_kwargs(kwargs: dict) -> None:
     assert kwargs.get("stderr") is not subprocess.PIPE, kwargs
 
 
+@pytest.mark.parametrize("with_log", [False, True], ids=["no-log", "log"])
 @pytest.mark.parametrize("entry", ["ensure_ray_cluster", "force_restart_local_cluster"])
-def test_ray_runtime_launches_ray_start_detached(monkeypatch, entry):
+def test_ray_runtime_launches_ray_start_detached(monkeypatch, tmp_path, entry, with_log):
     seen = _record_ray_start_kwargs(monkeypatch)
+    log_path = tmp_path / "ray.log" if with_log else None
 
-    getattr(ray_runtime, entry)(num_gpus=1)
+    getattr(ray_runtime, entry)(num_gpus=1, log_path=log_path)
 
     assert len(seen) == 1, seen
     _assert_detached_kwargs(seen[0])
 
 
-def test_ensure_ray_cluster_real_daemon_leaves_caller_group_and_does_not_block(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_log", [False, True], ids=["no-log", "log"])
+def test_ensure_ray_cluster_real_daemon_leaves_caller_group_and_does_not_block(monkeypatch, tmp_path, with_log):
     """A real stand-in daemon ends up outside this process's group and session, and the call returns promptly."""
     bin_dir, state = tmp_path / "bin", tmp_path / "state"
     _write_fake_ray(bin_dir, state)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.delenv("HL_RAY_HEAD_PORT", raising=False)
     monkeypatch.setattr(ray_runtime, "resource", _FakeResource(), raising=False)
+    log_path = tmp_path / "ray.log" if with_log else None
     errors: list[Exception] = []
 
     def _call():
         try:
-            ray_runtime.ensure_ray_cluster(num_gpus=1)
+            ray_runtime.ensure_ray_cluster(num_gpus=1, log_path=log_path)
         except Exception as exc:  # noqa: BLE001 - any failure is surfaced by the assertion below
             errors.append(exc)
 
@@ -251,12 +255,14 @@ def test_ensure_ray_cluster_real_daemon_leaves_caller_group_and_does_not_block(m
         pid = _daemon_pid(state)
         assert os.getpgid(pid) != os.getpgid(0), "Ray daemon is still in the caller's process group"
         assert os.getsid(pid) != os.getsid(0), "Ray daemon is still in the caller's session"
+        if with_log:
+            assert _STDERR_NOTE in log_path.read_text(encoding="utf-8")
     finally:
         _kill_daemon(state)
         worker.join(timeout=5)
 
 
-def test_ensure_ray_cluster_reports_ray_start_output(monkeypatch, tmp_path):
+def test_ensure_ray_cluster_without_log_still_reports_ray_start_output(monkeypatch, tmp_path):
     """The anonymous-file capture still carries a real failed ray start's output into the error."""
     bin_dir, state = tmp_path / "bin", tmp_path / "state"
     _write_fake_ray(bin_dir, state)

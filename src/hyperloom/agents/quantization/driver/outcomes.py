@@ -116,12 +116,14 @@ ASK: frozenset[OutcomeId] = frozenset(
     }
 )
 
+UNCLASSIFIED_FAILURE: OutcomeId = OutcomeId.unclassified_failure  # #30 sentinel
+
 # Outcomes that count as ``recovered=True`` when a multi-attempt trail ends on them.
 SUCCESS_TAGS: frozenset[OutcomeId | None] = frozenset({None, OutcomeId.eval_gap_accepted})
 
 
-# Ask-class IDs that participate in Python-driven retry (the only outcomes that use up one of a run's
-# ``max_requantize_attempts``).
+# Ask-class IDs that participate in Python-driven retry (the only outcomes that increment
+# ``requantize_attempts.txt``).
 ASK_RETRYABLE: frozenset[OutcomeId] = frozenset(
     {
         OutcomeId.exec_oom,  # #3
@@ -150,5 +152,6 @@ __all__ = [
     "ASK",
     "ASK_RETRYABLE",
     "MUST_HAVE_RECOVERS_THAT_FAIL_WITHOUT_ARTIFACT",
+    "UNCLASSIFIED_FAILURE",
     "SUCCESS_TAGS",
 ]

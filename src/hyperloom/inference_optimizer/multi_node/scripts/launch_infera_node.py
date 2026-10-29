@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import json
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -160,23 +159,8 @@ def _proc_tree(root: int) -> list[int]:
     return out
 
 
-def _group_alive(pgid: int | None) -> bool:
-    """True while process group ``pgid`` has a member this process can still signal."""
-    if pgid is None:
-        return False
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return True
-
-
 def _term_then_kill(pids: list[int], kill_wait_s: float, pgid: int | None = None) -> list[int]:
-    """SIGTERM, then SIGKILL, ``pids`` and process group ``pgid`` until all of them are gone; return the surviving pids."""
-
-    def _any_alive() -> bool:
-        return any(_pid_alive(pid) for pid in pids) or _group_alive(pgid)
-
+    """SIGTERM, then SIGKILL, ``pids`` (and process group ``pgid``) until none of them is alive; return the survivors."""
     for sig, wait_s in ((signal.SIGTERM, 5.0), (signal.SIGKILL, kill_wait_s)):
         for pid in pids:
             with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -185,15 +169,16 @@ def _term_then_kill(pids: list[int], kill_wait_s: float, pgid: int | None = None
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, sig)
         deadline = time.monotonic() + wait_s
-        while time.monotonic() < deadline and _any_alive():
+        while time.monotonic() < deadline and any(_pid_alive(pid) for pid in pids):
             time.sleep(0.5)
-        if not _any_alive():
+        if not any(_pid_alive(pid) for pid in pids):
             break
     return [pid for pid in pids if _pid_alive(pid)]
 
 
-def _reap_stale_engines_by_cmdline(kill_wait_s: float) -> None:
+def _reap_stale_engines_by_cmdline() -> None:
     """SIGKILL any residual sglang / infera engine process matched by cmdline via /proc, before a fresh launch."""
+    kill_wait_s = float(os.environ.get("HYPERLOOM_MN_KILL_WAIT_S", "120") or 120)
     pats = ("sglang.launch_server", "infera.engine.sglang", "infera.engine.vllm", "sglang::sched")
     me = os.getpid()
     victims: list[int] = []
@@ -246,8 +231,8 @@ def _kill_prior(pid_file: Path) -> None:
     pid_file.unlink(missing_ok=True)
     # Kill residual engine processes by cmdline (catches an orphaned launch_server holding port_base that ss/tree-kill
     # miss), then sweep ports.
-    _reap_stale_engines_by_cmdline(kill_wait_s)
-    _reap_stale_engine_ports(kill_wait_s)
+    _reap_stale_engines_by_cmdline()
+    _reap_stale_engine_ports()
 
 
 # The infera decode/prefill restart records the infera.engine wrapper PID in the pid-file, but the real
@@ -257,8 +242,14 @@ def _kill_prior(pid_file: Path) -> None:
 _REAP_PORTS = (30000, 30001, 30234, 32760)
 
 
-def _reap_stale_engine_ports(kill_wait_s: float) -> None:
-    """Kill any residual process group still holding the sglang engine ports, waiting for the whole group to exit."""
+def _reap_stale_engine_ports() -> None:
+    """Kill any residual process still holding the sglang engine ports."""
+    try:
+        import re as _re
+        import signal as _signal
+    except ImportError:  # pragma: no cover
+        return
+    kill_wait_s = float(os.environ.get("HYPERLOOM_MN_KILL_WAIT_S", "120") or 120)
     for port in _REAP_PORTS:
         try:
             out = subprocess.run(
@@ -269,14 +260,42 @@ def _reap_stale_engine_ports(kill_wait_s: float) -> None:
             ).stdout
         except (OSError, subprocess.SubprocessError):
             continue
-        for pid in sorted({int(m) for m in re.findall(r"pid=(\d+)", out or "")} - {0, 1}):
+        for m in _re.finditer(r"pid=(\d+)", out or ""):
+            try:
+                pid = int(m.group(1))
+            except ValueError:
+                continue
+            if pid <= 1:
+                continue
             try:
                 pgid = os.getpgid(pid)
             except ProcessLookupError:
                 continue
             _log(f"reaper: port {port} held by pid={pid} pgid={pgid}; killing")
-            if not _term_then_kill([pid], kill_wait_s, pgid) and not _group_alive(pgid):
-                _log(f"reaper: freed port {port} (pid={pid})")
+            for sig in (_signal.SIGTERM, _signal.SIGKILL):
+                try:
+                    os.killpg(pgid, sig)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    try:
+                        os.kill(pid, sig)
+                    except OSError:
+                        pass
+                deadline = time.monotonic() + (5.0 if sig == _signal.SIGTERM else kill_wait_s)
+                gone = False
+                while time.monotonic() < deadline:
+                    try:
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        gone = True
+                        break
+                    except PermissionError:
+                        break
+                    time.sleep(0.5)
+                if gone:
+                    _log(f"reaper: freed port {port} (pid={pid}, signal {int(sig)})")
+                    break
 
 
 def _build_sglang_cmd(
@@ -299,7 +318,7 @@ def _build_sglang_cmd(
         "--host",
         "0.0.0.0",  # nosec B104 - Infera worker must bind for pod-to-pod traffic.
         "--port",
-        str(_DEFAULT_ENGINE_PORT),
+        str(getattr(a, "engine_port", _DEFAULT_ENGINE_PORT)),
         "--discovery-backend",
         "kubernetes",
         "--advertise-host",
@@ -360,7 +379,7 @@ def _build_vllm_cmd(a: argparse.Namespace, *, advertise_host: str) -> list[str]:
         "--host",
         "0.0.0.0",  # nosec B104 - Infera worker must bind for pod-to-pod traffic.
         "--port",
-        str(_DEFAULT_ENGINE_PORT),
+        str(getattr(a, "engine_port", _DEFAULT_ENGINE_PORT)),
         "--discovery-backend",
         "kubernetes",
         "--advertise-host",

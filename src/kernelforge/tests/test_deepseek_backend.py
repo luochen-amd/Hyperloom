@@ -24,8 +24,7 @@ from kernelforge.agent_backends.deepseek import (
 )
 from kernelforge.agent_backends.registry import get_agent_provider
 from kernelforge.agent_backends.workspace_guard import WorkspaceSafetyError
-from kernelforge.agent_backends.usage import UsageAccumulator
-from kernelforge.config.edit_policy import FORGE_PROTECTED_PATHS
+from kernelforge.tracker.usage import UsageAccumulator
 
 _GATEWAY_URL = "https://gateway.example.invalid/v1"
 
@@ -122,7 +121,6 @@ def _spec(repo: Path, kernel: Path, **fields: object) -> AgentRunSpec:
         "cwd": str(repo),
         "timeout_sec": 30,
         "target_files": [str(kernel)],
-        "protected_path_rules": FORGE_PROTECTED_PATHS,
     }
     base.update(fields)
     return AgentRunSpec(**base)  # type: ignore[arg-type]
@@ -281,24 +279,6 @@ def test_a_runtime_whose_workspace_is_gone_is_shut_down(tmp_path: Path) -> None:
     lane_runtime, main_runtime = _FakeHarness.instances
     assert lane_runtime.closed
     assert not main_runtime.closed
-
-
-def test_closing_the_backend_shuts_down_every_runtime_it_started(tmp_path: Path) -> None:
-    """A lane round builds its own backend, so the round's end is the last chance to stop its processes."""
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    first_repo, first_kernel = _make_repo(tmp_path / "a")
-    second_repo, second_kernel = _make_repo(tmp_path / "b")
-    backend = _backend()
-    asyncio.run(backend.run(_spec(first_repo, first_kernel)))
-    asyncio.run(backend.run(_spec(second_repo, second_kernel)))
-
-    backend.close()
-
-    assert len(_FakeHarness.instances) == 2
-    assert all(runtime.closed for runtime in _FakeHarness.instances)
-    asyncio.run(backend.run(_spec(first_repo, first_kernel)))
-    assert len(_FakeHarness.instances) == 3
 
 
 def test_a_session_that_edits_a_protected_measurement_file_is_rejected_and_restored(
@@ -554,7 +534,7 @@ def test_a_crashed_runtime_is_not_served_to_later_sessions(tmp_path: Path) -> No
 
 def test_the_relay_never_adds_the_harness_on_its_own(tmp_path):
     """Relay members are the providers auto selection could pick; the harness is reached only by naming it."""
-    from kernelforge.workflows.forge_loop.bootstrap.relay import resolve_relay_policy
+    from kernelforge.cli.relay import resolve_relay_policy
     from kernelforge.config import Config
 
     claude_first = resolve_relay_policy(Config(workspace=str(tmp_path), agent_backend="claude"))

@@ -12,10 +12,9 @@ from click.testing import CliRunner
 
 from kernelforge.agent_backends.base import AgentRuntimeConfig
 from kernelforge.cli import main
-from kernelforge.workflows.forge_loop.preparation import task_preparer
-from kernelforge.workflows.forge_loop.preparation import task_preparer_prompts
-from kernelforge.workflows.forge_loop.preparation import task_preflight
-from kernelforge.config.edit_policy import FORGE_PROTECTED_PATHS
+from kernelforge.loop import task_preparer
+from kernelforge.loop import task_preparer_prompts
+from kernelforge.loop import task_preflight
 
 
 @pytest.mark.asyncio
@@ -219,10 +218,11 @@ def test_prepare_agent_does_not_receive_shell_access(tmp_path, monkeypatch):
     monkeypatch.setattr(task_preparer, "create_registered_backend", fake_factory)
     usage = object()
     configured = AgentRuntimeConfig(provider="codex", model="gpt-test")
-    monkeypatch.setattr(task_preparer, "agent_runtime", lambda _config: configured)
     result = asyncio.run(
         task_preparer._run_prepare_agent(
-            config=SimpleNamespace(),
+            config=SimpleNamespace(
+                agent_runtime=lambda: configured,
+            ),
             turn=task_preparer._AuthoringTurn(
                 workspace=tmp_path,
                 prompt="prompt",
@@ -246,7 +246,6 @@ def test_prepare_agent_does_not_receive_shell_access(tmp_path, monkeypatch):
     assert spec.additional_directories == [str(tmp_path / "read-only")]
     assert spec.target_files == [str(tmp_path / "driver.py")]
     assert spec.protected_globs == ["kernel.py"]
-    assert spec.protected_path_rules is FORGE_PROTECTED_PATHS
     assert spec.allow_dirty_targets is True
     assert spec.allow_untracked is True
     assert captured["usage"] is usage
@@ -275,13 +274,15 @@ def test_prepare_agent_owns_the_driver_it_is_asked_to_author(
         lambda runtime: FakeBackend(),
     )
     driver = tmp_path / "driver.py"
-    monkeypatch.setattr(
-        task_preparer, "agent_runtime", lambda _config: AgentRuntimeConfig(provider="codex", model="gpt-test")
-    )
 
     asyncio.run(
         task_preparer._run_prepare_agent(
-            config=SimpleNamespace(),
+            config=SimpleNamespace(
+                agent_runtime=lambda: AgentRuntimeConfig(
+                    provider="codex",
+                    model="gpt-test",
+                ),
+            ),
             turn=task_preparer._AuthoringTurn(
                 workspace=tmp_path,
                 prompt="prompt",
@@ -315,7 +316,7 @@ def test_prepare_agent_initializes_required_git_workspace(
             """Confirm the temporary baseline exists before execution."""
             nonlocal calls
             calls += 1
-            assert task_preparer.git_head(tmp_path)
+            assert task_preparer._git_head(tmp_path)
             return SimpleNamespace(text="prepared")
 
     def fake_factory(_runtime):
@@ -323,10 +324,12 @@ def test_prepare_agent_initializes_required_git_workspace(
         return FakeBackend()
 
     monkeypatch.setattr(task_preparer, "create_registered_backend", fake_factory)
-    monkeypatch.setattr(
-        task_preparer, "agent_runtime", lambda _config: AgentRuntimeConfig(provider="codex", model="gpt-test")
+    config = SimpleNamespace(
+        agent_runtime=lambda: AgentRuntimeConfig(
+            provider="codex",
+            model="gpt-test",
+        ),
     )
-    config = SimpleNamespace()
 
     first = asyncio.run(
         task_preparer._run_prepare_agent(
@@ -383,7 +386,7 @@ def test_required_git_workspace_reports_setup_failures(
 
 def test_a_conforming_driver_still_gets_its_spec_beside_it(tmp_path):
     """Persist the declared spec even when preparation is skipped."""
-    from kernelforge.workflows.forge_loop.bootstrap.preparation import _persist_declared_spec
+    from kernelforge.cli.forge_loop_command import _persist_declared_spec
 
     driver_dir = tmp_path / "artifacts"
     driver_dir.mkdir()
@@ -400,7 +403,7 @@ def test_a_conforming_driver_still_gets_its_spec_beside_it(tmp_path):
 
 def test_a_refused_destination_is_reported_and_not_fatal(tmp_path, capsys):
     """Say so and carry on: the driver conformed without the spec beside it."""
-    from kernelforge.workflows.forge_loop.bootstrap.preparation import _persist_declared_spec
+    from kernelforge.cli.forge_loop_command import _persist_declared_spec
 
     driver_dir = tmp_path / "artifacts"
     driver_dir.mkdir()
@@ -419,7 +422,7 @@ def test_a_refused_destination_is_reported_and_not_fatal(tmp_path, capsys):
 
 def test_persisting_the_spec_is_optional_when_none_was_supplied(tmp_path):
     """Do nothing at all when the operator named no spec."""
-    from kernelforge.workflows.forge_loop.bootstrap.preparation import _persist_declared_spec
+    from kernelforge.cli.forge_loop_command import _persist_declared_spec
 
     driver = tmp_path / "driver.py"
     driver.write_text("# already conforms\n", encoding="utf-8")
@@ -576,7 +579,7 @@ def test_prepare_agent_gets_the_spec_inline_and_it_is_restored(tmp_path, monkeyp
     monkeypatch.setattr(task_preparer, "_preflight_async", fake_preflight)
     monkeypatch.setattr(
         task_preparer,
-        "git_head",
+        "_git_head",
         lambda _workspace: "new-head" if git_state["committed"] else "base-head",
     )
     monkeypatch.setattr(task_preparer, "_git_untracked", lambda _workspace: set())

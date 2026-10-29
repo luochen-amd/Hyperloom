@@ -12,6 +12,7 @@ must not import ``cli`` (one-way dependency).
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -26,11 +27,14 @@ from hyperloom.orchestrator.actions.executors import (
 from hyperloom.orchestrator.actions.executors.integrate_patch import IntegratePatchExecutor
 from hyperloom.orchestrator.actions.executors.targeted_build_executor import TargetedBuildExecutor
 from hyperloom.orchestrator.actions.executors.profile import profile_executor
-from hyperloom.orchestrator.actions.executors.roofline import RooflineExecutor
+from hyperloom.orchestrator.actions.executors.roofline import make_roofline_executor
 from hyperloom.inference_optimizer.framework_paths import resolve_kernel_search_roots
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import to avoid a runtime cycle
     from hyperloom.orchestrator.loop.coordinator import Coordinator
+
+
+log = logging.getLogger(__name__)
 
 
 # Declarative action_kind -> ExecutorFn map.
@@ -140,9 +144,13 @@ def _build_specialist_executor(
     # live KnowledgePlane so the subprocess has the PR Monitor MCP wired.
     mcp_config_path: str | None = str(getattr(args, "specialist_mcp_config", "") or "") or None
     if mcp_config_path is None and knowledge_plane is not None:
+        try:
+            pr_mcp_url = knowledge_plane.specialist_mcp_url()
+        except AttributeError:
+            pr_mcp_url = ""
         generated = write_specialist_mcp_config(
             session_dir=session_dir,
-            pr_monitor_mcp_url=knowledge_plane.specialist_mcp_url(),
+            pr_monitor_mcp_url=pr_mcp_url,
         )
         if generated is not None:
             mcp_config_path = str(generated)
@@ -175,6 +183,7 @@ def _build_specialist_executor(
             "domain": run_result.domain,
             "gap_canonical_id": run_result.gap_canonical_id,
             "specialist_done": run_result.specialist_done,
+            "turns_used": run_result.turns_used,
             "workspace": run_result.workspace,
             "transcript_path": run_result.transcript_path,
             "done_path": run_result.done_path,
@@ -205,12 +214,20 @@ def _register_executors(
         session_dir: Optional session directory passed to executors.
         specialist_executor: Optional specialist executor to register.
     """
+    from hyperloom.orchestrator.backends import bind_backend_coordinator, ensure_gpu_backend
+
+    ensure_gpu_backend()
+    bind_backend_coordinator(coordinator)
+
     for kind, fn in _REAL_EXECUTORS_FULL.items():
         coordinator.sub.register_executor(kind, fn)
 
     coordinator.sub.register_executor(
         "target_analysis",
-        TargetAnalysisExecutor(compare_against_gpu=(compare_against_gpu or "").strip()),
+        TargetAnalysisExecutor(
+            compare_against_gpu=(compare_against_gpu or "").strip(),
+            session_dir=session_dir,
+        ),
     )
 
     if specialist_executor is not None:
@@ -227,11 +244,11 @@ def _register_executors(
     # watermark crossing, so always registered.
     coordinator.sub.register_executor(
         "roofline",
-        RooflineExecutor(shared_state=coordinator.shared_state),
+        make_roofline_executor(shared_state=coordinator.shared_state),
     )
 
     # targeted_build: off-loop compiled-component builds.  Coordinator-internal
-    # only (in COORDINATOR_INTERNAL_ACTIONS); dispatched by the enablement phase,
+    # only (in INTERNAL_ONLY_ACTION_NAMES); dispatched by the enablement phase,
     # not proposed by LLM agents.  The executor runs via run_task_registered so
     # cancel_inflight_actions can stop it at shutdown or on a spent budget.
     coordinator.sub.register_executor(
@@ -241,3 +258,12 @@ def _register_executors(
 
     # kernel_agent: the KERNEL_AGENT phase's whole pipeline, run under the task's lanes.
     coordinator.sub.register_executor("kernel_agent", lambda ctx: coordinator.phase_kernel.run_agent(ctx))
+
+    if log.isEnabledFor(logging.DEBUG):
+        for required_kind in ("roofline", "profile"):
+            if required_kind not in coordinator.sub.executor_registry:
+                log.debug(
+                    "register_executors: %r missing from sub-agent registry; "
+                    "PRELUDE analysis task will fail with no_executor",
+                    required_kind,
+                )

@@ -13,7 +13,6 @@ import pytest
 from hyperloom.orchestrator.actions.executors.roofline import (
     RooflineExecutor,
 )
-from hyperloom.orchestrator.kernel import kernel_decisions
 from hyperloom.orchestrator.roles import MockBackend, ScriptedPlan
 from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.loop.kernel_request import lifecycle_paths
@@ -408,9 +407,9 @@ async def test_handle_request_rejected_integrate_emits_lone_end(
             "attempt_count": 3,
         }
         monkeypatch.setattr(
-            kernel_decisions,
+            c.shared_state,
             "find_rejected_kernel_patch",
-            lambda state, payload: rejection,
+            lambda payload: rejection,
         )
 
         intent = Intent(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 import os
+import shlex
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,7 +21,6 @@ from hyperloom.common.visible_devices import (
     parse_device_list,
 )
 from hyperloom.inference_optimizer.gpu_types import geak_identity_pin
-from hyperloom.inference_optimizer.grid_server_args import server_arg_value
 
 
 def _is_autofilled_rocr(*, value: str, recipe_envs: Mapping[str, Any]) -> bool:
@@ -462,6 +462,23 @@ def _resolve_handoff_tp(*, gpu_ids: str, tp: int) -> int:
     return max(min(int(tp or 1), advertised), 1)
 
 
+def _parse_server_arg_value(server_args: str, flag: str) -> str | None:
+    """Extract a CLI flag's value from a server-args string."""
+    if not server_args or not flag:
+        return None
+    try:
+        toks = shlex.split(server_args)
+    except ValueError:
+        toks = server_args.split()
+    prefix = flag + "="
+    for i, tok in enumerate(toks):
+        if tok == flag:
+            return toks[i + 1] if i + 1 < len(toks) else None
+        if tok.startswith(prefix):
+            return tok[len(prefix) :]
+    return None
+
+
 def _resolve_serving_fidelity(
     *,
     baseline_server_args: str,
@@ -472,7 +489,7 @@ def _resolve_serving_fidelity(
 
     mml = int(state_max_model_len or 0)
     if mml <= 0:
-        v = server_arg_value(baseline_server_args, "--max-model-len")
+        v = _parse_server_arg_value(baseline_server_args, "--max-model-len")
         try:
             mml = int(v) if v else 0
         except (TypeError, ValueError):
@@ -482,7 +499,7 @@ def _resolve_serving_fidelity(
     if mml > 0:
         out["max_model_len"] = mml
 
-    v = server_arg_value(baseline_server_args, "--gpu-memory-utilization")
+    v = _parse_server_arg_value(baseline_server_args, "--gpu-memory-utilization")
     try:
         mem = float(v) if v else 0.0
     except (TypeError, ValueError):

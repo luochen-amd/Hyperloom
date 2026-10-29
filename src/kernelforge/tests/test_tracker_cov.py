@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 
-from kernelforge.workflows.forge_loop.campaign.schema import Experiment, ExperimentSubject
-from kernelforge.workflows.forge_loop.campaign.experiment import ExperimentTracker
-from kernelforge.workflows.forge_loop.campaign.schema import Iteration
+from kernelforge.tracker import Experiment, ExperimentSubject, ExperimentTracker
+from kernelforge.tracker.schema import Iteration
 
 
 # ─── ExperimentTracker ───
@@ -47,6 +46,27 @@ def test_set_baseline_precedence(tmp_path):
     # Existing baseline is not overwritten.
     tracker.set_baseline(exp.experiment_id, 9.0)
     assert tracker.get(exp.experiment_id).baseline_wall_ms == 2.0
+
+
+def test_list_experiments_skips_malformed(tmp_path):
+    tracker = ExperimentTracker(tmp_path)
+    tracker.create(ExperimentSubject(task_id="good", backend="ck"))
+    (tmp_path / "broken.json").write_text("{ not valid json")
+    exps = tracker.list_experiments()
+    assert len(exps) == 1
+
+
+def test_list_experiments_skips_json_that_is_not_an_experiment_record(tmp_path):
+    """Valid JSON is not enough: a listed row must carry identity and a birth time."""
+    tracker = ExperimentTracker(tmp_path)
+    good = tracker.create(ExperimentSubject(task_id="good", backend="ck"))
+    (tmp_path / "sidecar.json").write_text(json.dumps({"note": "not an experiment"}))
+    (tmp_path / "headless.json").write_text(json.dumps({"created_at": "2026-01-01"}))
+    (tmp_path / "array.json").write_text(json.dumps([{"experiment_id": "x"}]))
+
+    listed = tracker.list_experiments()
+
+    assert [exp.experiment_id for exp in listed] == [good.experiment_id]
 
 
 def test_get_missing_raises(tmp_path):

@@ -1,6 +1,6 @@
 # Copyright Advanced Micro Devices, Inc. All rights reserved.
 
-"""Extra unit tests for the candidate archive (workflows/forge_loop/campaign/archive.py)."""
+"""Extra unit tests for the candidate archive (loop/archive.py)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from kernelforge.workflows.forge_loop.campaign.archive import CandidateArchive, CandidateRecord
+from kernelforge.loop.archive import CandidateArchive, CandidateRecord
 
 
 # ── numeric helpers ────────────────────────────────────────────────────────────
@@ -55,6 +55,7 @@ def test_record_writes_all_files_and_meta(tmp_path):
             best_mean_case_speedup_before=1.0,
             kernel_source="print(1)\n",
             change_diff="+ added\n",
+            pmc_full="PMC SUMMARY",
             validation_text="validation ok",
             plan="vectorize",
         )
@@ -62,6 +63,7 @@ def test_record_writes_all_files_and_meta(tmp_path):
     assert d is not None
     assert (d / "flash.py").read_text() == "print(1)\n"
     assert (d / "change.diff").exists()
+    assert (d / "profile.txt").read_text() == "PMC SUMMARY"
     assert (d / "validation.txt").exists()
     meta = archive.load_meta(1)
     assert meta["decision"] == "KEEP"

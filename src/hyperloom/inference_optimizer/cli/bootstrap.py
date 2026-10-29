@@ -12,27 +12,19 @@ import os
 import shlex
 import sys
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 from hyperloom.common.coerce import to_unix
 from hyperloom.common.env import forge_explicitly_enabled
 from hyperloom.common.gpu_partition import published_shape
 from hyperloom.common.gpu_power_settings import SCLK_MAX_MHZ, DeclaredPowerSettings
-from hyperloom.common.perf_metric import agentx_enabled as _agentx_enabled, is_agentx_mode
+from hyperloom.common.perf_metric import is_agentx_mode
 from hyperloom.common.timeutil import now_iso
-from hyperloom.plugs import (
-    ManifestSources,
-    PlugError,
-    PlugHost,
-    ResolvedManifest,
-    activated,
-    builtin_registry,
-    resolve_manifest,
+from hyperloom.orchestrator.actions.executors._workload_envs import (
+    agentx_enabled as _agentx_enabled,
 )
-from hyperloom.plugs.resolved import read_resolved, write_resolved
 from hyperloom.orchestrator.phases.machine_state import bank_phase_segment
 from hyperloom.orchestrator.state.shared_state import SharedState
 from hyperloom.common.workload_defaults import (
@@ -48,95 +40,6 @@ from .model_gate import _load_model_arch, _load_model_config_tags
 from ..model_config_utils import summarize_model_config
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class HostedPlugInputs:
-    """What a hosted run gives the plug host: the lock layer and the host inputs."""
-
-    lock: Mapping[str, Mapping[str, str]]
-    host_info: object
-
-
-_hosted_inputs: HostedPlugInputs | None = None
-
-
-def set_hosted_plug_inputs(inputs: HostedPlugInputs | None) -> None:
-    """Called by the hosted entry before ``optimize`` starts; ``None`` clears it.  Unset, plug resolution is unchanged."""
-    global _hosted_inputs
-    _hosted_inputs = inputs
-
-
-def resolve_plug_manifest(args: argparse.Namespace) -> ResolvedManifest:
-    """Resolve the plug manifest for this run and check it can start; exit 2 on a configuration error.
-
-    Reads and writes nothing in a session: it runs before the session is opened or seeded, so a refused flag leaves
-    nothing behind. On a resume, the ``plugs.resolved.json`` of the ``--resume-from`` directory is read back
-    before any flag is applied.
-    """
-    resume_from = getattr(args, "resume_from", None)
-    registry = builtin_registry()
-    hosted = _hosted_inputs
-    try:
-        sources = ManifestSources(
-            profile=getattr(args, "plug_profile", None),
-            manifest_path=getattr(args, "plug_manifest", None) or os.environ.get("HYPERLOOM_MANIFEST") or None,
-            overrides_path=os.environ.get("HYPERLOOM_MANIFEST_OVERRIDES") or None,
-            cli_plugs=tuple(getattr(args, "plug", None) or ()),
-            cli_configs=tuple(getattr(args, "plug_config", None) or ()),
-            resumed=read_resolved(Path(resume_from).expanduser().resolve()) if resume_from else None,
-            locked=hosted.lock if hosted else {},
-        )
-        manifest = resolve_manifest(registry, sources)
-        PlugHost(manifest, registry, session_dir=None).plan()
-    except PlugError as exc:
-        print(f"ERROR: plug configuration refused: {exc}", file=sys.stderr)
-        sys.exit(2)
-    return manifest
-
-
-def open_plug_host(manifest: ResolvedManifest, session_dir: Path) -> PlugHost:
-    """Bind a resolved ``manifest`` to the opened session.
-
-    A run that selects nothing (the built-in local profile) writes nothing to the session and prints nothing. A run
-    that selects something records the outcome in ``plugs.resolved.json`` and prints the ``Plugs`` line.
-    """
-    hosted = _hosted_inputs
-    host = PlugHost(
-        manifest,
-        builtin_registry(),
-        session_dir=session_dir,
-        host_info=hosted.host_info if hosted else None,
-    )
-    host.plan()
-    if not manifest.is_builtin_default:
-        write_resolved(session_dir, manifest, host.fingerprint())
-        print(f"Plugs           : profile={manifest.profile} fingerprint={host.fingerprint()}")
-    return host
-
-
-@contextmanager
-def running_plug_host(host: PlugHost) -> Iterator[PlugHost]:
-    """Start ``host``, make it the process's current host, and close it on the way out."""
-    with activated(host):
-        try:
-            host.start()
-            yield host
-        finally:
-            host.close()
-
-
-def warn_without_target_gpu(args: argparse.Namespace) -> None:
-    """Say on stderr that no target GPU was given, so the target analysis writes only its marker file."""
-    if (getattr(args, "compare_against_gpu", None) or "").strip():
-        return
-    print(
-        "[target_analysis] no --compare-against-gpu set; will write a "
-        "marker JSON at $SESSION_DIR/target_analysis/target_baseline.json "
-        "(reason=no_target_gpu_configured) — set --compare-against-gpu "
-        "to fetch real InferenceX reference data.",
-        file=sys.stderr,
-    )
 
 
 def parse_operator_extra_env(args: argparse.Namespace) -> dict[str, str]:
@@ -379,7 +282,6 @@ _GPU_PERF_LEVEL = "gpu_perf_level"
 _GPU_SCLK_MAX_MHZ = "gpu_sclk_max_mhz"
 _NODE_POWER_MANAGEMENT = "node_power_management"
 _NODE_POWER_LIMIT_W = "node_power_limit_w"
-_ALLOW_SHARED_NPM_NODE = "allow_shared_npm_node"
 _DECLARED = "declared"
 
 
@@ -408,12 +310,11 @@ def constraint_budget_resume_conflict(args: Any, state: Any) -> str:
 
 
 def _established_gpu_power_settings(
-    declared: Any, *, nodes: int, apply: bool, owner: str, allow_shared_npm_node: bool
+    declared: Any, *, nodes: int, apply: bool, owner: str
 ) -> tuple[dict[str, Any], str]:
     """Apply the declared settings when permitted, then check and record them; ``(record, error)``.
 
     The check after applying is the one an operator-set value gets, so a set that did not take is caught the same way.
-    With NPM enabled the session must also have every card on the node, unless it is allowed to share it.
     """
     from hyperloom.common.gpu_power_settings import GpuPowerSettingsError
 
@@ -430,36 +331,7 @@ def _established_gpu_power_settings(
     record, error = resolve_gpu_power_settings(declared, nodes=nodes, just_applied=bool(applied))
     if applied:
         record["applied"] = applied
-    outside, shared = _shared_npm_node(record.get("node"))
-    if shared and allow_shared_npm_node:
-        record["shared_npm_node"] = outside
-    elif shared:
-        refusal = (
-            f"{shared}: firmware shares one power budget across every card on the node, so work on the others moves "
-            "this session's measurements; give the session every GPU on the node, or pass --allow-shared-npm-node "
-            "(on every launch and resume) to measure anyway"
-        )
-        error = f"{error}; {refusal}" if error else refusal
     return record, error
-
-
-def _shared_npm_node(node: dict[str, Any] | None) -> tuple[list[int] | None, str]:
-    """The cards an NPM-enabled node has outside this session and why it is shared, or ``([], "")`` when NPM is off or
-    the session has every card; the cards are ``None`` when the session's own cannot be named."""
-    from hyperloom.common.gpu_power_settings import NPM, NPM_ENABLED, GpuPowerSettingsError, gpus_outside_session
-
-    if not node or node.get(NPM) != NPM_ENABLED:
-        return [], ""
-    try:
-        outside = gpus_outside_session()
-    except GpuPowerSettingsError as exc:
-        return None, f"node power management is enabled and the cards this session uses cannot be named ({exc})"
-    if not outside:
-        return [], ""
-    return (
-        outside,
-        f"node power management is enabled and GPU(s) {', '.join(map(str, outside))} are outside this session",
-    )
 
 
 def _per_gpu_launch_error(args: Any, available_gpus: set[int] | None) -> str:
@@ -502,7 +374,6 @@ def resolve_launch_gpu_power(args: Any, *, nodes: int, owner: str) -> dict[str, 
             nodes=nodes,
             apply=bool(getattr(args, "apply_gpu_power_settings", False)),
             owner=owner,
-            allow_shared_npm_node=bool(getattr(args, _ALLOW_SHARED_NPM_NODE, False)),
         )
     if not error and mask is None:
         # No mask, so the cards amd-smi reported are the ones the session may use; only known after reading them.
@@ -532,7 +403,6 @@ def resume_gpu_power_settings(args: Any, state: Any) -> tuple[dict[str, Any], st
         nodes=max(int(getattr(args, _NODES, 1) or 1), int(getattr(state, _NODES, 1) or 1)),
         apply=apply,
         owner=str(getattr(state, "session_id", "") or ""),
-        allow_shared_npm_node=bool(getattr(args, _ALLOW_SHARED_NPM_NODE, False)),
     )
     if error and archived.get("applied") and not apply:
         error += (
@@ -643,11 +513,11 @@ def _card_errors(
 
 
 def _build_agentx_corpus_shape_seed() -> dict[str, Any]:
-    """Return the canonical corpus shape."""
+    """Return the canonical corpus shape, until a measurement replaces it."""
     from hyperloom.common.agentx_workload import MLPERF_CORPUS, is_mlperf_backend, mlperf_trajectories
 
     if is_mlperf_backend():
-        # The MLPerf corpus has no published length distribution, only its trajectory count.
+        # The MLPerf corpus has no published shape; the first measurement supplies it.
         return {
             "corpus_loader": MLPERF_CORPUS,
             "corpus_entries": mlperf_trajectories(),
@@ -684,9 +554,16 @@ def _seed_shared_state(
         0,
         min(research_lane_ceiling(), research_lane_capacity),
     )
-    # An unset (None) or unparsable capacity falls back to the visible GPU count.
+    gpu_specialist_capacity_raw = getattr(
+        args,
+        "gpu_specialist_capacity",
+        None,
+    )
     try:
-        gpu_specialist_capacity = max(0, int(getattr(args, "gpu_specialist_capacity", None)))
+        gpu_specialist_capacity = max(
+            0,
+            int(gpu_specialist_capacity_raw) if gpu_specialist_capacity_raw is not None else detect_gpu_count(),
+        )
     except (TypeError, ValueError):
         gpu_specialist_capacity = detect_gpu_count()
     # Collect plateau threshold overrides; absent keys use defaults at compute time.
@@ -721,19 +598,17 @@ def _seed_shared_state(
 
     # Canonical model identity (prefers the quantize prelude's pinned source name).
     _model_identity = resolve_model_display_name(args)
-    benchmark_mode = "synthetic"
-    agentx_backend = ""
-    agentx_epoch = 0
+    benchmark_mode = "agentx" if _agentx_enabled() else "synthetic"
     if _agentx_enabled():
         from hyperloom.common.agentx_workload import agentic_backend
 
-        benchmark_mode = "agentx"
         agentx_backend = agentic_backend()
-        agentx_epoch = AGENTX_MEASUREMENT_EPOCH
+    else:
+        agentx_backend = ""
     state = SharedState(
         session_id=session_id,
-        claw_session_id=os.environ.get("CLAW_SESSION_ID", "").strip(),
-        sandbox_user_id=os.environ.get("SANDBOX_USER_ID", "").strip(),
+        claw_session_id=(os.environ.get("CLAW_SESSION_ID") or "").strip(),
+        sandbox_user_id=(os.environ.get("SANDBOX_USER_ID") or "").strip(),
         model_name=_model_identity,
         model_path=str(args.model),
         model_class=args.model_class or "",
@@ -766,7 +641,8 @@ def _seed_shared_state(
         max_model_len=_int_arg("max_model_len", 0),
         kernel_enabled=not getattr(args, "no_kernel", False),
         kernel_optimizer=_kernel_optimizer_record,
-        # AgentX corpus shape: seeded from canonical constants if AgentX is on.
+        # AgentX corpus shape: seeded from canonical constants if AgentX is on;
+        # overwritten by the measured shape after every aiperf run.
         agentx_corpus_shape=_build_agentx_corpus_shape_seed() if benchmark_mode == "agentx" else {},
         baseline_tput=0.0,
         cumulative_gain_validated=0.0,
@@ -782,9 +658,8 @@ def _seed_shared_state(
         bypass_scripts_dir=os.environ.get("HYPERLOOM_BYPASS_SCRIPTS_DIR", "").strip(),
         framework_repo_path=os.environ.get("FRAMEWORK_REPO_PATH", "").strip(),
         benchmark_backend=os.environ.get("HYPERLOOM_BENCHMARK_BACKEND", "").strip().lower(),
-        xdit_model_name=os.environ.get("XDIT_MODEL_NAME", "").strip(),
         compute_partition=dict(compute_partition if compute_partition is not None else (published_shape() or {})),
-        nodes=max(1, int(getattr(args, _NODES, 1))),
+        nodes=max(1, int(getattr(args, _NODES, 1) or 1)),
         warm_replay_enabled=not bool(getattr(args, "no_warm_replay", False)),
         **(
             {}
@@ -803,7 +678,7 @@ def _seed_shared_state(
         # FRAMEWORK local-exploration arm; --no-framework-local-explore opts out.
         framework_local_explore_enabled=not bool(getattr(args, "no_framework_local_explore", False)),
         # Enablement self-heal lanes; --enablement off opts out.
-        enablement_mode=str(getattr(args, "enablement", "all")),
+        enablement_mode=str(getattr(args, "enablement", "all") or "all"),
         research_scout_enabled=bool(getattr(args, "research_scout", True)),
         research_scout_interval=max(1, int(getattr(args, "research_scout_interval", 3) or 3)),
         static_recon_enabled=bool(getattr(args, "static_recon", True)),
@@ -816,11 +691,13 @@ def _seed_shared_state(
             not is_agentx_mode(benchmark_mode) if args.enable_conc_sweep is None else args.enable_conc_sweep
         ),
         benchmark_mode=benchmark_mode,
-        agentx_epoch=agentx_epoch,
+        agentx_epoch=AGENTX_MEASUREMENT_EPOCH if _agentx_enabled() else 0,
         agentx_backend=agentx_backend,
         grading=seed_grading(os.environ.get("FRAMEWORK", "sglang"), benchmark_mode),
         conc_sweep_concs=_parse_conc_sweep_concs(args, benchmark_mode),
-        conc_sweep_total_budget_sec=int(getattr(args, "conc_sweep_total_budget_sec", 9000)),
+        conc_sweep_total_budget_sec=int(
+            getattr(args, "conc_sweep_total_budget_sec", 9000) or 0,
+        ),
     )
     state.save(session_dir)
     return state
@@ -977,6 +854,7 @@ def _begin_resume_leg(state: SharedState) -> str:
     state.close_sequence_done = False
     state.target_reached_at = ""
     state.crash_count = 0
+    state.teardown_timings_sec = {}
     state.begin_leg()
     return state.resumed_ts
 
@@ -1018,14 +896,14 @@ def _reconcile_crash_count(state: SharedState, session_dir: Path) -> None:
         if int(disk_state.crash_count or 0) < live:
             disk_state.crash_count = live
             disk_state.save(session_dir)
-    except (OSError, ValueError, TypeError):
+    except Exception:
         log.exception("crash_count reconcile (state.json) failed (non-fatal)")
 
     try:
         from hyperloom.orchestrator.actions.executors.report import reconcile_final_crash_count
 
         reconcile_final_crash_count(session_dir, live)
-    except (OSError, ValueError, TypeError, AttributeError):
+    except Exception:
         log.exception("crash_count reconcile (final.json) failed (non-fatal)")
 
 

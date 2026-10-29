@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from hyperloom.orchestrator.kernel import kernel_decisions as kd
 from hyperloom.orchestrator.state.shared_state import SharedState
 
 from .conftest import seed_integrate_verdict
@@ -20,17 +19,18 @@ def state() -> SharedState:
 
 
 # Invariant 1: empty kernel_id is a no-op Invariant 2: KEEP wins; non-KEEP never overwrites a pending KEEP
-# Vendor-playbook KEEPs (e.g. mori dispatch/combine) must never auto-deploy.
-# Pending-KEEP queue semantics
-def test_pending_keep_drains_in_micro_speedup_order(state: SharedState):
+# Vendor-playbook KEEPs (e.g. mori dispatch/combine) must never auto-deploy. next_pending_keep_kernel_id queue
+# semantics
+def test_next_pending_keep_drains_in_micro_speedup_order(state: SharedState):
     """KEEPs on different source_files drain highest-micro-first as the stack fills."""
     _seed_keep(state, "k001", decision="KEEP", micro=2.5, source_file="/p/file_a.py", artifact="/t/a1.py")
     _seed_keep(state, "k009", decision="KEEP", micro=4.13, source_file="/p/file_b.py", artifact="/t/b9.py")
     _seed_keep(state, "k015", decision="KEEP", micro=3.2, source_file="/p/file_c.py", artifact="/t/c15.py")
 
     # Round 1: strongest first.
-    assert kd.pending_keep_kernel_ids(state) == ["k009", "k015", "k001"]
-    assert kd.has_keep_pending_integrate(state) is True
+    assert state.next_pending_keep_kernel_id() == "k009"
+    assert state.pending_keep_kernel_ids() == ["k009", "k015", "k001"]
+    assert state.has_keep_pending_integrate is True
 
     # Simulate integrate k009 KEEP -> writes to optimization_stack.
     state.optimization_stack.append(
@@ -43,7 +43,8 @@ def test_pending_keep_drains_in_micro_speedup_order(state: SharedState):
     )
 
     # Round 2: next-strongest.
-    assert kd.pending_keep_kernel_ids(state) == ["k015", "k001"]
+    assert state.next_pending_keep_kernel_id() == "k015"
+    assert state.pending_keep_kernel_ids() == ["k015", "k001"]
 
     state.optimization_stack.append(
         {
@@ -55,7 +56,7 @@ def test_pending_keep_drains_in_micro_speedup_order(state: SharedState):
     )
 
     # Round 3: last one.
-    assert kd.pending_keep_kernel_ids(state)[0] == "k001"
+    assert state.next_pending_keep_kernel_id() == "k001"
 
     state.optimization_stack.append(
         {
@@ -67,11 +68,12 @@ def test_pending_keep_drains_in_micro_speedup_order(state: SharedState):
     )
 
     # Drained.
-    assert kd.pending_keep_kernel_ids(state) == []
-    assert kd.has_keep_pending_integrate(state) is False
+    assert state.next_pending_keep_kernel_id() == ""
+    assert state.pending_keep_kernel_ids() == []
+    assert state.has_keep_pending_integrate is False
 
 
-def test_pending_keep_skips_same_source_file_after_integrate(state: SharedState):
+def test_next_pending_keep_skips_same_source_file_after_integrate(state: SharedState):
     """Whole-file overwrite: a queued KEEP on an already-integrated source_file is dropped."""
     _seed_keep(state, "k001", decision="KEEP", micro=3.0, source_file="/sgl-workspace/aiter/aiter/ops/moe_op.py")
     # Different kernel, same file -- weaker.
@@ -79,7 +81,7 @@ def test_pending_keep_skips_same_source_file_after_integrate(state: SharedState)
     _seed_keep(state, "k009", decision="KEEP", micro=4.13, source_file="/sgl-workspace/aiter/aiter/ops/rmsnorm.py")
 
     # Strongest per file; k003 collapses away (shares moe_op.py with stronger k001).
-    queue = kd.pending_keep_kernel_ids(state)
+    queue = state.pending_keep_kernel_ids()
     assert queue == ["k009", "k001"], queue
     assert "k003" not in queue
 
@@ -91,18 +93,19 @@ def test_pending_keep_skips_same_source_file_after_integrate(state: SharedState)
             "tput": 4500.0,
         }
     )
-    assert kd.pending_keep_kernel_ids(state) == ["k009"]
-    assert "k003" not in kd.pending_keep_kernel_ids(state)
+    assert state.next_pending_keep_kernel_id() == "k009"
+    assert state.pending_keep_kernel_ids() == ["k009"]
+    assert "k003" not in state.pending_keep_kernel_ids()
 
 
-def test_pending_keep_excludes_rejected_and_integrated(state: SharedState):
+def test_next_pending_keep_excludes_rejected_and_integrated(state: SharedState):
     """Both rejected_kernel_ids and optimization_stack entries gate kernels out of the queue."""
     _seed_keep(state, "k001", decision="KEEP", micro=1.5, source_file="/p/a.py")
     _seed_keep(state, "k009", decision="KEEP", micro=4.0, source_file="/p/b.py")
 
     state.rejected_kernel_ids.append("k009")
 
-    assert kd.pending_keep_kernel_ids(state)[0] == "k001"
+    assert state.next_pending_keep_kernel_id() == "k001"
 
     state.optimization_stack.append(
         {
@@ -112,8 +115,8 @@ def test_pending_keep_excludes_rejected_and_integrated(state: SharedState):
             "tput": 4400.0,
         }
     )
-    assert kd.pending_keep_kernel_ids(state) == []
-    assert kd.has_keep_pending_integrate(state) is False
+    assert state.next_pending_keep_kernel_id() == ""
+    assert state.has_keep_pending_integrate is False
 
 
 # untried_hot_reusable_kernels report gate.
@@ -150,7 +153,7 @@ def test_untried_hot_kernels_returns_only_reusable_above_threshold(state: Shared
             },  # aten not reusable
         ],
     )
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert set(untried) == {"k001", "k002", "k004"}
     assert "k003" not in untried  # below _DEFAULT_HOT_KERNEL_MIN_GPU_PCT (5.0)
     assert "k006" not in untried  # non-reusable
@@ -195,7 +198,7 @@ def test_untried_hot_kernels_reproduces_log1_session_164910Z(state: SharedState)
             {"kernel_id": "k007", "gpu_pct": 9.7, "reusable_native_kernel": False, "source_file": ""},
         ],
     )
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert set(untried) == {"k001", "k002", "k004"}
     assert "k003" not in untried  # 1.3% sits below the 5% gate
     assert "k006" not in untried  # non-reusable despite 15.6%
@@ -224,12 +227,12 @@ def test_untried_hot_kernels_vendor_playbook_group_gated_on_aggregate(state: Sha
             },
         ],
     )
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     # Both members carry the group's full aggregate and must both clear the gate.
     assert set(untried) == {"k010", "k011"}, "vendor-playbook group must not be dropped as below_min_gpu_pct"
 
 
-def test_untried_hot_kernels_vendor_playbook_floor_still_applies(state: SharedState, monkeypatch):
+def test_untried_hot_kernels_vendor_playbook_floor_still_applies(state: SharedState):
     """A playbook's min_gpu_pct_floor is a floor on the *threshold*, not a bypass: an aggregate that clears a loosened env override but not the playbook's own floor must still be gated out."""
     _set_trace(
         state,
@@ -245,9 +248,8 @@ def test_untried_hot_kernels_vendor_playbook_floor_still_applies(state: SharedSt
             },
         ],
     )
-    # Loosening the env default to 1.0% must not let this in: the playbook's own floor (10.0) still applies.
-    monkeypatch.setenv("HYPERLOOM_KERNEL_OPT_MIN_GPU_PCT", "1.0")
-    untried = kd.untried_hot_reusable_kernels(state)
+    # A caller loosening the env default to 1.0% must not let this in: the playbook's own floor (10.0) still applies.
+    untried = state.untried_hot_reusable_kernels(min_gpu_pct=1.0)
     assert untried == []
 
 
@@ -290,7 +292,7 @@ def test_untried_hot_kernels_vendor_playbook_gate_survives_real_projection(state
 
     # Split-load pass-through direction: neither member clears the 10% default alone (7%, 5%), but the pair's
     # aggregate (12%) must.
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert set(untried) == {"k010", "k011"}, (
         "aggregate gate must not degrade to bare gpu_pct on the real "
         "record_trace_analyze() -> hot_kernels_top15 production path"
@@ -299,7 +301,6 @@ def test_untried_hot_kernels_vendor_playbook_gate_survives_real_projection(state
 
 def test_untried_hot_kernels_vendor_playbook_floor_still_applies_via_real_projection(
     state: SharedState,
-    monkeypatch,
 ):
     """Unsafe-direction counterpart of the test above: a playbook's own ``min_gpu_pct_floor`` must still block dispatch through the real projection path, even when the caller has loosened ``HYPERLOOM_KERNEL_OPT_MIN_GPU_PCT``."""
     state.record_trace_analyze(
@@ -322,8 +323,7 @@ def test_untried_hot_kernels_vendor_playbook_floor_still_applies_via_real_projec
     projected = state.last_trace_analyze["hot_kernels_top15"][0]
     assert projected["vendor_playbook_min_gpu_pct_floor"] == 10.0
 
-    monkeypatch.setenv("HYPERLOOM_KERNEL_OPT_MIN_GPU_PCT", "1.0")
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels(min_gpu_pct=1.0)
     assert untried == [], (
         "the playbook's own floor must survive the real projection path "
         "and still block dispatch even under a loosened env override"
@@ -342,11 +342,11 @@ def test_untried_hot_kernels_collapses_by_task_group(state: SharedState):
             {"primary_kernel_id": "k002", "kernel_ids": ["k001", "k002"]},
         ],
     )
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert len(untried) == 1  # shared task_group -> one slot
 
 
-def test_untried_hot_kernels_rank_on_tracelens_order_via_real_projection(state: SharedState, monkeypatch):
+def test_untried_hot_kernels_rank_on_tracelens_order_via_real_projection(state: SharedState):
     """TraceLens' task priority beats a hotter kernel, its group slot goes to the highest-impact member, and an
     unranked collective keeps a slot of its own past the cap."""
     hot = [
@@ -368,9 +368,8 @@ def test_untried_hot_kernels_rank_on_tracelens_order_via_real_projection(state: 
             "task_groups": [{"primary_kernel_id": "k002", "kernel_ids": ["k002", "k003"]}],
         },
     )
-    assert kd.untried_hot_reusable_kernels(state) == ["k003", "k001", "k004"]
-    monkeypatch.setenv("HYPERLOOM_KERNEL_OPT_GATE_TOP_N", "1")
-    assert kd.untried_hot_reusable_kernels(state) == ["k003", "k004"]
+    assert state.untried_hot_reusable_kernels() == ["k003", "k001", "k004"]
+    assert state.untried_hot_reusable_kernels(top_n=1) == ["k003", "k004"]
 
 
 def test_untried_hot_kernels_skips_when_any_group_member_attempted(state: SharedState):
@@ -386,7 +385,7 @@ def test_untried_hot_kernels_skips_when_any_group_member_attempted(state: Shared
         ],
     )
     seed_integrate_verdict(state, "k002", source_file="/p/moe_op.py", task_group_key="k002")
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert untried == []
 
 
@@ -409,7 +408,7 @@ def test_untried_hot_kernels_skips_when_source_file_integrated(state: SharedStat
             "tput": 4500.0,
         }
     )
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert untried == ["k009"]
 
 
@@ -426,7 +425,7 @@ def test_untried_hot_kernels_caps_at_top_n(state: SharedState, monkeypatch):
         for i in range(15)
     ]
     _set_trace(state, hot_kernels=hot)
-    untried = kd.untried_hot_reusable_kernels(state)
+    untried = state.untried_hot_reusable_kernels()
     assert len(untried) == 3
 
 
@@ -580,7 +579,7 @@ def test_integrate_keep_is_terminal_and_not_rejected(state: SharedState):
 def test_pending_keep_includes_kernel_with_unexhausted_fault(state: SharedState):
     """A kernel whose only integrate attempt is an un-exhausted fault stays queueable."""
     _seed_keep(state, "k001", decision="KEEP", micro=3.0, source_file="/p/a.py", artifact="/tmp/k001_opt.py")
-    assert kd.pending_keep_kernel_ids(state) == ["k001"]
+    assert state.pending_keep_kernel_ids() == ["k001"]
 
     # An integration fault must NOT remove it from the pending queue (retryable).
     state.record_kernel_integrate_result(
@@ -592,7 +591,7 @@ def test_pending_keep_includes_kernel_with_unexhausted_fault(state: SharedState)
             patch_path="/tmp/k001_opt.py",
         ),
     )
-    assert kd.pending_keep_kernel_ids(state) == ["k001"]
+    assert state.pending_keep_kernel_ids() == ["k001"]
 
 
 def test_pending_keep_drops_kernel_after_fault_budget_exhausted(state: SharedState):
@@ -609,7 +608,7 @@ def test_pending_keep_drops_kernel_after_fault_budget_exhausted(state: SharedSta
             ),
         )
     assert "k001" in state.rejected_kernel_ids
-    assert kd.pending_keep_kernel_ids(state) == []
+    assert state.pending_keep_kernel_ids() == []
 
 
 def test_pending_keep_drops_kernel_on_genuine_revert(state: SharedState):
@@ -624,4 +623,4 @@ def test_pending_keep_drops_kernel_on_genuine_revert(state: SharedState):
             patch_path="/tmp/k001_opt.py",
         ),
     )
-    assert kd.pending_keep_kernel_ids(state) == []
+    assert state.pending_keep_kernel_ids() == []

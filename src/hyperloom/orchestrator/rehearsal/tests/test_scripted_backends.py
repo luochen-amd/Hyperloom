@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from hyperloom.common.bringup import LadderStage
-from hyperloom.orchestrator.actions.executors._subprocess_kill import RoundWatch
 from hyperloom.orchestrator.bringup import observe_bringup
 from hyperloom.orchestrator.rehearsal import (
     COMPLETED,
@@ -56,9 +55,9 @@ def _backend(*attempts: LaunchAttempt) -> ScriptedLaunchBackend:
     return ScriptedLaunchBackend(scenario=LaunchScenario(attempts=attempts), clock=VirtualClock())
 
 
-def _play(backend: ScriptedLaunchBackend, slot, **gates) -> subprocess.CompletedProcess:
+def _play(backend: ScriptedLaunchBackend, slot, **kwargs) -> subprocess.CompletedProcess:
     """Run one launch against ``backend``, writing into ``slot``."""
-    return backend.run(["magpie", "bench.yaml"], watch=RoundWatch(server_log_path=str(slot / "server.log"), **gates))
+    return backend.run(["magpie", "bench.yaml"], server_log_path=str(slot / "server.log"), **kwargs)
 
 
 def test_a_clean_boot_serves_and_leaves_a_log_that_classifies_as_booted(tmp_path):
@@ -68,8 +67,7 @@ def test_a_clean_boot_serves_and_leaves_a_log_that_classifies_as_booted(tmp_path
 
     assert done.returncode == 0
     observed = observe_bringup(server_log=(tmp_path / "server.log").read_text(encoding="utf-8"))
-    assert observed.observation.stage_failed is None
-    assert observed.observation.stage_reached >= LadderStage.HTTP_READY
+    assert observed.observation.booted
     assert (tmp_path / "bench" / "benchmark_report.json").exists()
 
 
@@ -161,7 +159,8 @@ def test_a_hang_that_outlives_the_budget_stops_for_the_budget_in_both_backends(t
     hard_timeout = 0.4
     produced = run_with_session_kill(
         [sys.executable, "-c", "import time; time.sleep(30)"],
-        watch=RoundWatch(timeout=hard_timeout, session_deadline_sec=time.monotonic() + hard_timeout),
+        timeout=hard_timeout,
+        session_deadline_sec=time.monotonic() + hard_timeout,
     )
 
     backend = _backend(LaunchAttempt(outcome=HANG, duration_sec=30.0))

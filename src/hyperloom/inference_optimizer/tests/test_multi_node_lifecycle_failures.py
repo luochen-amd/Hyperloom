@@ -13,7 +13,6 @@ import pytest
 
 from hyperloom.inference_optimizer import multi_node
 from hyperloom.orchestrator.actions.executors import _multi_node_server_lifecycle as life
-from hyperloom.orchestrator.actions.executors._multi_node_restart_settings import RestartSettings
 
 
 @pytest.fixture
@@ -61,11 +60,11 @@ def _profile() -> None:
 
 
 def _workers() -> None:
-    asyncio.run(life._wait_for_workers_ready_async(RestartSettings.from_env(), timeout_s=600))
+    asyncio.run(life._wait_for_workers_ready_async(timeout_s=600, poll_every_s=1))
 
 
 def _health() -> None:
-    asyncio.run(life._wait_for_server_health_async(RestartSettings.from_env(), timeout_s=600))
+    asyncio.run(life._wait_for_server_health_async(timeout_s=600, poll_every_s=1))
 
 
 # site -> (state, routes, call, endpoints requested when its first request fails once)
@@ -154,44 +153,22 @@ def test_log_sweep_lets_an_unexpected_ssh_failure_propagate(collect) -> None:
         collect(_SSH_STATE, _ssh_answering("10.0.0.1", RuntimeError("ssh bug")))
 
 
-@pytest.mark.parametrize("name", ["HYPERLOOM_MN_POLL_TIMEOUT_S", "HYPERLOOM_MN_HEALTH_POLL_S"])
-def test_an_invalid_restart_setting_fails_before_the_cluster_is_touched(monkeypatch, tmp_path, name) -> None:
+def test_invalid_health_poll_collects_logs_and_retries_the_started_server(monkeypatch) -> None:
     from hyperloom.inference_optimizer.multi_node import cli
     from hyperloom.inference_optimizer.multi_node._internal import external_state
-    from hyperloom.orchestrator.actions.executors import _server_patcher
 
     calls: list[str] = []
     monkeypatch.setattr(life, "is_multi_node", lambda: True)
     monkeypatch.setattr(life, "_read_state", dict)
     monkeypatch.setattr(external_state, "external_service_url", lambda: "")
-    monkeypatch.setenv(name, "invalid")
+    monkeypatch.setenv("HYPERLOOM_MN_HEALTH_POLL_S", "invalid")
     monkeypatch.setenv("HYPERLOOM_MN_RESTART_RECLAIM_RETRY", "1")
-    monkeypatch.setenv("TRACELENS_ROOT", str(tmp_path))
-    monkeypatch.delenv("HYPERLOOM_ENABLE_PATCH", raising=False)
-    monkeypatch.setattr(_server_patcher, "resolve_sglang_patch_set", lambda: "roofline")
-    monkeypatch.setattr(cli, "cmd_apply_tracelens_patch", lambda _ns: calls.append("patch") or 0)
+    monkeypatch.delenv("TRACELENS_ROOT", raising=False)
     monkeypatch.setattr(cli, "cmd_restart_server", lambda _ns: calls.append("restart") or 0)
     monkeypatch.setattr(cli, "kill_inference_for_kernel_agent_best_effort", lambda: calls.append("reclaim"))
     monkeypatch.setattr(life, "_collect_worker_server_logs", lambda _state, _why: calls.append("logs"))
 
-    with pytest.raises(life.ServerRestartFailed, match=f"invalid multi-node restart setting: {name}='invalid'"):
-        asyncio.run(life.restart_server_for_round(life.RoundServer(framework="vllm", model_path="/model", tp=1, ep=1)))
+    with pytest.raises(life.ServerRestartFailed, match="HYPERLOOM_MN_HEALTH_POLL_S"):
+        asyncio.run(life.restart_server_for_round(framework="vllm", model_path="/model", tp=1, ep=1))
 
-    assert calls == []
-
-
-def test_a_crashed_worker_of_any_lws_rank_fails_fast(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The launcher names each pod's log after its LWS rank, so a rank-1 crash must be read like a rank-0 one."""
-    monkeypatch.setenv("HYPERLOOM_MN_SERVER_LOG_DIR", str(tmp_path))
-    (tmp_path / "mn_infera_server_10.0.0.2_r1.log").write_text(
-        "loading weights\nlaunch_server.py: error: unrecognized arguments: --bogus-flag\n", encoding="utf-8"
-    )
-    (tmp_path / "mn_infera_server_10.0.0.3_r2.log").write_text(
-        "Health check failed: detokenizer did not respond\n" * 15, encoding="utf-8"
-    )
-
-    crash = life._worker_fastfail_reason(["10.0.0.2"], elapsed=60, crash_grace=45, wedge_grace=420, timeout_s=900)
-    wedge = life._worker_fastfail_reason(["10.0.0.3"], elapsed=500, crash_grace=45, wedge_grace=420, timeout_s=900)
-
-    assert crash is not None and "unrecognized arguments: --bogus-flag" in crash
-    assert wedge is not None and "10.0.0.3" in wedge
+    assert calls == ["restart", "logs", "reclaim", "restart", "logs"]

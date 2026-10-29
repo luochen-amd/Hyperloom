@@ -17,8 +17,8 @@ from kernelforge.agent_backends.base import (
     AgentRuntimeConfig,
 )
 
-from kernelforge.workflows.forge_fusion import author, emit
-from kernelforge.workflows.forge_fusion.author import (
+from kernelforge.fusion import author, emit
+from kernelforge.fusion.author import (
     AUTHOR_RC_FAILED,
     AUTHOR_RC_SAFETY,
     AUTHOR_RC_TIMEOUT,
@@ -28,8 +28,7 @@ from kernelforge.workflows.forge_fusion.author import (
     build_multi_author_prompt,
     run_author,
 )
-from kernelforge.workflows.forge_fusion.llm_failure import AGENT_SAFETY_REJECTION_ATTR
-from kernelforge.config.edit_policy import FORGE_PROTECTED_PATHS
+from kernelforge.fusion.llm_failure import AGENT_SAFETY_REJECTION_ATTR
 
 
 @pytest.fixture(autouse=True)
@@ -367,49 +366,6 @@ def test_registered_author_names_the_run_failure_beside_a_workspace_rejection(
     log_text = log_path.read_text(encoding="utf-8")
     assert "non_target.py" in log_text
     assert "timed out after 3600s" in log_text
-
-
-@pytest.mark.parametrize(
-    ("outcome", "verdict", "non_target_after"),
-    [
-        ("violation", "rejected and restored non-target paths", "NON_TARGET = 'baseline-secret'\n"),
-        ("locked_index", "index became locked", "NON_TARGET = 'rejected'\n"),
-        ("guard_defect", "internal workspace guard failure", "NON_TARGET = 'rejected'\n"),
-    ],
-)
-def test_registered_author_reraises_an_interrupt_after_a_workspace_verdict(
-    tmp_path, monkeypatch, outcome, verdict, non_target_after
-):
-    """An operator interrupt still ends the run once the workspace verdict is recorded."""
-    repo, target, non_target = _author_repo(tmp_path)
-    if outcome == "guard_defect":
-
-        def broken_enforce(self):
-            raise OSError("guard defect")
-
-        monkeypatch.setattr(author._AuthorWorkspaceGuard, "enforce", broken_enforce)
-
-    class Backend:
-        name = "codex"
-        capabilities = AgentCapabilities()
-        runtime = AgentRuntimeConfig(provider="codex", model="gpt-test")
-
-        async def run(self, spec, usage=None):
-            non_target.write_text("NON_TARGET = 'rejected'\n", encoding="utf-8")
-            if outcome == "locked_index":
-                (repo / ".git" / "index.lock").write_text("", encoding="utf-8")
-            raise KeyboardInterrupt("operator interrupt")
-
-    log_path = tmp_path / f"author-interrupt-{outcome}.log"
-    with pytest.raises(KeyboardInterrupt, match="operator interrupt"):
-        run_author(
-            "P",
-            AuthorWorkspace(workdir=str(repo), log_path=str(log_path), target_files=[str(target)]),
-            AuthorAgent(backend=Backend()),
-        )
-
-    assert verdict in log_path.read_text(encoding="utf-8")
-    assert non_target.read_text(encoding="utf-8") == non_target_after
 
 
 def test_registered_author_rejects_a_permitted_new_module_that_was_staged(tmp_path):
@@ -1264,7 +1220,6 @@ def test_declared_harness_target_survives_the_default_name_globs(tmp_path):
             allow_dirty_targets=True,
             allow_untracked=True,
             allow_dirty_baseline=True,
-            protected_path_rules=FORGE_PROTECTED_PATHS,
             protected_globs=[],
             tool_policy=AgentToolPolicy(read=True, search=True, write=True, shell=True),
         )

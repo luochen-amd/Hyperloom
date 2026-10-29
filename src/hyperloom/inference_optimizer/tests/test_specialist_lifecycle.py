@@ -19,7 +19,6 @@ from hyperloom.orchestrator.specialists.dispatch import SpecialistDispatchCollab
 from hyperloom.orchestrator.state.shared_state import SharedState
 from ._dispatch_helpers import pump_until_settled
 from .conftest import use_fake_specialist_cli
-from hyperloom.orchestrator.state.task_registry import TaskSpec
 
 
 @dataclass
@@ -359,11 +358,9 @@ async def test_dispatcher_hook_calls_bookkeeping_on_specialist_task(
         requires_lanes=tuple(),
     )
     await coord.tasks.create_or_return_existing(
-        TaskSpec(
-            kind=task.kind,
-            params=task.params,
-            idempotency_key=task.idempotency_key,
-        ),
+        kind=task.kind,
+        params=task.params,
+        idempotency_key=task.idempotency_key,
     )
     await coord.tick(n=1)
     await pump_until_settled(coord.dispatcher)

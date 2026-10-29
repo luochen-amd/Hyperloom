@@ -134,6 +134,7 @@ def test_build_empty_specialist_done_default_reason():
 
 def test_path_helpers_none_workspace():
     r = _runner()
+    assert r._prompt_path(None) is None
     assert r._transcript_path(None) is None
     assert r._heartbeat_path(None) is None
     assert r._done_path(None) is None
@@ -141,6 +142,7 @@ def test_path_helpers_none_workspace():
 
 def test_path_helpers_with_workspace(tmp_path):
     r = _runner()
+    assert r._prompt_path(tmp_path).name == "prompt.md"
     assert r._transcript_path(tmp_path).name == "transcript.jsonl"
     assert r._heartbeat_path(tmp_path).name == "heartbeat.json"
     assert r._done_path(tmp_path).name == "specialist_done.json"
@@ -170,9 +172,17 @@ def test_resolve_workspace_session_dir(tmp_path):
 
 def test_write_helpers_noop_none_workspace():
     r = _runner()
+    r._write_prompt(None, "sys", "user")
     r._append_transcript(None, 0, {"k": "v"})
     r._write_heartbeat(None, turn=0, max_turns=1, status="x")
     r._write_specialist_done(None, {"a": 1})
+
+
+def test_write_prompt(tmp_path):
+    r = _runner()
+    r._write_prompt(tmp_path, "SYS", "USER")
+    text = (tmp_path / "prompt.md").read_text(encoding="utf-8")
+    assert "SYS" in text and "USER" in text
 
 
 def test_append_transcript(tmp_path):

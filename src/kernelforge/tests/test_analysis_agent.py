@@ -12,19 +12,19 @@ from types import SimpleNamespace
 import pytest
 
 from kernelforge.agent_backends import AgentRunResult
-from kernelforge.workflows.forge_loop.roles.analysis import (
+from kernelforge.orchestrator.analysis import (
     AnalysisAgentService,
     AnalysisBundleError,
     AnalysisConfigurationError,
     AnalysisSources,
     IncrementalAnalysisInput,
+    _AnalysisProtection,
 )
-from kernelforge.workflows.forge_loop.roles.analysis_protection import AnalysisProtection
-from kernelforge.workflows.forge_loop.roles.analysis_session import (
+from kernelforge.orchestrator.analysis_session import (
     AnalysisAttemptLimitError,
     AnalysisSessionJournal,
 )
-from kernelforge.workflows.forge_loop.roles.contracts import (
+from kernelforge.orchestrator.contracts import (
     CaseEvidence,
     OrchestrationContext,
 )
@@ -337,7 +337,7 @@ async def test_analysis_protection_only_allows_artifact_writes(
     workspace, kernel, driver = _workspace(tmp_path)
     staging = workspace / "forge_experiments" / "analysis" / "work" / "abc"
     staging.mkdir(parents=True)
-    protection = AnalysisProtection(
+    protection = _AnalysisProtection(
         workspace=workspace,
         staging_root=staging,
         protected_paths=(kernel, driver),

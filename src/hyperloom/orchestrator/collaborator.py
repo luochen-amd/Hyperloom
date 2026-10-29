@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from hyperloom.orchestrator.bus.message_bus import MessageBus
-    from hyperloom.orchestrator.bus.resource_lock import SqliteLeaseBackend
+    from hyperloom.orchestrator.bus.resource_lock import ResourceLockManager
     from hyperloom.orchestrator.bus.storage.connection import SqliteConnection
     from hyperloom.orchestrator.bus.gpu_pool import SpecialistGpuPool
     from hyperloom.orchestrator.loop.sub_agent_runner import SubAgentRunner
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from hyperloom.orchestrator.state.round_store import RoundStore
     from hyperloom.orchestrator.state.shared_state import SharedState
     from hyperloom.orchestrator.state.task_registry import TaskRegistry
+    from hyperloom.orchestrator.loop.coordinator import Coordinator, CoordinatorState
 
 
 class OrchestrationPrompt:
@@ -45,11 +46,7 @@ class OrchestrationPrompt:
 class CoordinatorCollaborator:
     """An object that borrows the Coordinator's infrastructure for its own methods."""
 
-    # ``coordinator`` is the Coordinator, left unnamed: every collaborator in the orchestrator
-    # imports this module, so naming its owner's type points the package root back up into
-    # ``loop.coordinator`` and makes the whole ``loop`` package cyclic. The properties below
-    # restate the borrowed types for callers.
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: "Coordinator") -> None:
         self._coord = coordinator
 
     # ------------------------------------------------------------------ #
@@ -58,7 +55,7 @@ class CoordinatorCollaborator:
 
     @property
     def shared_state(self) -> "SharedState":
-        return cast("SharedState", self._coord.shared_state)
+        return self._coord.shared_state
 
     @property
     def session_dir(self):
@@ -66,39 +63,39 @@ class CoordinatorCollaborator:
 
     @property
     def tasks(self) -> "TaskRegistry":
-        return cast("TaskRegistry", self._coord.tasks)
+        return self._coord.tasks
 
     @property
     def bus(self) -> "MessageBus":
-        return cast("MessageBus", self._coord.bus)
+        return self._coord.bus
 
     @property
-    def locks(self) -> "SqliteLeaseBackend":
-        return cast("SqliteLeaseBackend", self._coord.locks)
+    def locks(self) -> "ResourceLockManager":
+        return self._coord.locks
 
     @property
     def db(self) -> "SqliteConnection":
-        return cast("SqliteConnection", self._coord.db)
+        return self._coord.db
 
     @property
     def sub(self) -> "SubAgentRunner":
-        return cast("SubAgentRunner", self._coord.sub)
+        return self._coord.sub
 
     @property
     def rounds(self) -> "RoundStore":
-        return cast("RoundStore", self._coord.rounds)
+        return self._coord.rounds
 
     @property
     def policy(self) -> "PolicyGate":
-        return cast("PolicyGate", self._coord.policy)
+        return self._coord.policy
 
     @property
     def gpu_specialist_pool(self) -> "SpecialistGpuPool":
-        return cast("SpecialistGpuPool", self._coord.gpu_specialist_pool)
+        return self._coord.gpu_specialist_pool
 
     @property
     def framework_gpu_pool(self) -> "SpecialistGpuPool":
-        return cast("SpecialistGpuPool", self._coord.framework_gpu_pool)
+        return self._coord.framework_gpu_pool
 
     @property
     def knowledge_plane(self):
@@ -109,12 +106,12 @@ class CoordinatorCollaborator:
         return self._coord.backends
 
     @property
-    def state(self):
+    def state(self) -> "CoordinatorState":
         return self._coord.state
 
     @property
     def orch_prompt(self) -> "OrchestrationPrompt":
-        return cast("OrchestrationPrompt", self._coord.orch_prompt)
+        return self._coord.orch_prompt
 
     @property
     def recipe_kb(self):
